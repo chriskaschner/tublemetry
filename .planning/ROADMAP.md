@@ -25,11 +25,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. Temperature ladder captured at 5+ known temperatures, resolving the 72-solution 7-segment encoding ambiguity
   2. ESP32 decodes the Pin 5 RS-485 display stream in real time and extracts the current water temperature
   3. HA climate entity displays the current water temperature (read-only -- no setpoint control yet)
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md -- Python decode library: test infrastructure, 7-segment decoder, frame parser, display state machine (TDD)
+- [ ] 01-02-PLAN.md -- ESPHome external component: C++ port of decode logic, climate entity, diagnostic sensors, YAML config
 
 ### Phase 2: Button Injection + Closed-Loop Control
 **Goal**: User can set hot tub temperature from Home Assistant with closed-loop verification -- the system writes setpoints via button injection and reads confirmation via display decoding, with automatic drift correction
