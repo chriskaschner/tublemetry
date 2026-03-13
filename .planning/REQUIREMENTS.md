@@ -63,24 +63,24 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BUTN-01 | - | Pending |
-| BUTN-02 | - | Pending |
-| BUTN-03 | - | Pending |
-| BUTN-04 | - | Pending |
-| BUTN-05 | - | Pending |
-| CONN-01 | - | Pending |
-| CONN-02 | - | Pending |
-| CONN-03 | - | Pending |
-| DISP-01 | - | Pending |
-| DISP-02 | - | Pending |
-| DISP-03 | - | Pending |
-| ENRG-01 | - | Pending |
+| DISP-01 | Phase 1 | Pending |
+| DISP-02 | Phase 1 | Pending |
+| BUTN-01 | Phase 2 | Pending |
+| BUTN-02 | Phase 2 | Pending |
+| BUTN-03 | Phase 2 | Pending |
+| BUTN-04 | Phase 2 | Pending |
+| BUTN-05 | Phase 2 | Pending |
+| CONN-01 | Phase 2 | Pending |
+| CONN-02 | Phase 2 | Pending |
+| CONN-03 | Phase 2 | Pending |
+| DISP-03 | Phase 2 | Pending |
+| ENRG-01 | Phase 2 | Pending |
 
 **Coverage:**
 - v1 requirements: 12 total
-- Mapped to phases: 0
-- Unmapped: 12
+- Mapped to phases: 12
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-03-13 after initial definition*
+*Last updated: 2026-03-13 after roadmap revision (phase order reversed)*
