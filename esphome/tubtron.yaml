@@ -1,8 +1,11 @@
 esphome:
   name: tubtron
   friendly_name: "Tubtron"
-  platform: ESP32
+
+esp32:
   board: esp32dev
+  framework:
+    type: arduino
 
 # WiFi -- placeholder credentials, user will customize
 wifi:
@@ -24,11 +27,6 @@ api:
 ota:
   - platform: esphome
     # No password for initial development
-
-# SNTP time -- needed for last_update timestamp sensor
-time:
-  - platform: sntp
-    id: sntp_time
 
 # External component -- local path to our component
 external_components:

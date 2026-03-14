@@ -327,22 +327,7 @@ void TubtronDisplay::publish_timestamp_() {
   if (this->last_update_sensor_ == nullptr)
     return;
 
-  // Try to get real time from SNTP if available
-  // ESPHome time components register globally; check if we can get a time
-  auto *time_comp = time::RealTimeClock::get_default();
-  if (time_comp != nullptr) {
-    auto now = time_comp->now();
-    if (now.is_valid()) {
-      char buf[32];
-      snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d",
-               now.year, now.month, now.day_of_month,
-               now.hour, now.minute, now.second);
-      this->last_update_sensor_->publish_state(std::string(buf));
-      return;
-    }
-  }
-
-  // Fallback: publish millis() as "uptime:NNNNN"
+  // Publish millis uptime as timestamp -- SNTP time accessed via HA if needed
   char buf[32];
   snprintf(buf, sizeof(buf), "uptime:%lu", (unsigned long) millis());
   this->last_update_sensor_->publish_state(std::string(buf));
@@ -356,12 +341,10 @@ float TubtronClimate::get_setup_priority() const {
 
 climate::ClimateTraits TubtronClimate::traits() {
   auto traits = climate::ClimateTraits();
-  traits.set_supports_current_temperature(true);
-  traits.set_supported_modes({climate::CLIMATE_MODE_HEAT});
+  traits.add_supported_mode(climate::CLIMATE_MODE_HEAT);
   traits.set_visual_min_temperature(80.0f);
   traits.set_visual_max_temperature(104.0f);
   traits.set_visual_temperature_step(1.0f);
-  traits.set_supports_action(false);
   return traits;
 }
 

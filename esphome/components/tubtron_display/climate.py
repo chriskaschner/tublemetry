@@ -17,9 +17,8 @@ TubtronClimate = tubtron_display_ns.class_(
     "TubtronClimate", climate.Climate, cg.Component
 )
 
-CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend(
+CONFIG_SCHEMA = climate.climate_schema(TubtronClimate).extend(
     {
-        cv.GenerateID(): cv.declare_id(TubtronClimate),
         cv.Required(CONF_TUBTRON_ID): cv.use_id(TubtronDisplay),
     }
 ).extend(cv.COMPONENT_SCHEMA)

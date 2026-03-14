@@ -11,10 +11,7 @@ Exposes diagnostic text sensors:
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text_sensor
-from esphome.const import (
-    ENTITY_CATEGORY_DIAGNOSTIC,
-    ICON_FORMAT_TEXT,
-)
+from esphome.const import ENTITY_CATEGORY_DIAGNOSTIC
 
 from . import TubtronDisplay
 
@@ -29,7 +26,7 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.Required(CONF_TUBTRON_ID): cv.use_id(TubtronDisplay),
         cv.Optional(CONF_DISPLAY_STRING): text_sensor.text_sensor_schema(
-            icon=ICON_FORMAT_TEXT,
+            icon="mdi:format-text",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_RAW_HEX): text_sensor.text_sensor_schema(

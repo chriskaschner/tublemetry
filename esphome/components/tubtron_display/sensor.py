@@ -13,6 +13,7 @@ from esphome.const import (
     ICON_PERCENT,
 )
 
+
 from . import TubtronDisplay
 
 CONF_TUBTRON_ID = "tubtron_id"

@@ -5,7 +5,6 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/uart/uart.h"
-#include "esphome/components/time/real_time_clock.h"
 
 #include <string>
 
