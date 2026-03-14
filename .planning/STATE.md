@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: "01-02-PLAN.md Task 3 checkpoint:human-verify (awaiting user)"
-last_updated: "2026-03-14T01:33:00Z"
-last_activity: 2026-03-14 -- Completed plan 01-02 Tasks 1-2 (ESPHome external component), awaiting human-verify checkpoint
+status: phase_complete
+stopped_at: "Completed 01-02-PLAN.md -- Phase 1 complete"
+last_updated: "2026-03-14T01:54:00Z"
+last_activity: 2026-03-14 -- Completed plan 01-02 (ESPHome external component), Phase 1 complete
 progress:
   total_phases: 2
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
   completed_plans: 2
   percent: 50
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 
 ## Current Position
 
-Phase: 1 of 2 (RS-485 Display Reading)
-Plan: 2 of 2 in current phase (01-02 Tasks 1-2 complete, awaiting human-verify checkpoint)
-Status: Checkpoint -- awaiting human verification of ESPHome component structure
-Last activity: 2026-03-14 -- Completed 01-02 Tasks 1-2 (ESPHome external component + YAML config)
+Phase: 1 of 2 (RS-485 Display Reading) -- COMPLETE
+Plan: 2 of 2 in current phase -- ALL PLANS COMPLETE
+Status: Phase 1 complete -- ready for Phase 2 (Button Injection) or hardware testing
+Last activity: 2026-03-14 -- Completed 01-02 (ESPHome external component compiles, 56 tests pass)
 
 Progress: [█████░░░░░] 50%
 
@@ -36,18 +36,18 @@ Progress: [█████░░░░░] 50%
 
 **Velocity:**
 - Total plans completed: 2
-- Average duration: 4min
-- Total execution time: 8min
+- Average duration: 5min
+- Total execution time: 9min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 2/2 | 8min | 4min |
+| 01 | 2/2 | 9min | 5min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (4min), 01-02 (4min)
-- Trend: Consistent 4min/plan
+- Last 5 plans: 01-01 (4min), 01-02 (5min)
+- Trend: Consistent ~5min/plan
 
 *Updated after each plan completion*
 
@@ -71,7 +71,10 @@ Recent decisions affecting current work:
 - [01-02]: Frame boundary detection uses millis() gap > 1ms (not micros()).
 - [01-02]: SEVEN_SEG_TABLE formatted with markers for cross-check test parseability.
 - [01-02]: Pin 6 data read and discarded to prevent UART buffer overflow.
-- [01-02]: ESPHome compile deferred to user machine -- YAML and Python syntax validated.
+- [01-02]: ESPHome compile verified successfully after fixing deprecated APIs (CLIMATE_SCHEMA, ClimateTraits, platform/board block).
+- [01-02]: Timestamp sensor uses millis() uptime instead of SNTP RealTimeClock (simpler, no external dependency).
+- [01-02]: climate.climate_schema(TubtronClimate) replaces deprecated climate.CLIMATE_SCHEMA.
+- [01-02]: Top-level esp32: block with framework: type: arduino replaces deprecated platform/board in esphome: block.
 
 ### Pending Todos
 
@@ -85,6 +88,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T01:33:00Z
-Stopped at: 01-02-PLAN.md Task 3 checkpoint:human-verify (awaiting user verification of ESPHome component)
+Last session: 2026-03-14T01:54:00Z
+Stopped at: Completed 01-02-PLAN.md -- Phase 1 complete
 Resume file: .planning/phases/01-button-injection-mvp/01-02-SUMMARY.md

@@ -2,79 +2,84 @@
 phase: 01-button-injection-mvp
 plan: 02
 subsystem: firmware
-tags: [esphome, esp32, cpp, rs485, 7-segment, climate-entity, uart, external-component]
+tags: [esphome, esp32, c++, rs485, climate-entity, external-component, 7-segment, uart]
 
 # Dependency graph
 requires:
   - phase: 01-01
     provides: "Python decode library with SEVEN_SEG_TABLE, frame parser, and display state machine"
 provides:
-  - "ESPHome external component with C++ frame parser and 7-segment decoder"
-  - "Read-only climate entity (climate.hot_tub) with current_temperature"
-  - "6 diagnostic sensors: display_string, raw_hex, display_state, decode_confidence, digit_values, last_update"
-  - "Dual UART config for Pin 5 + Pin 6 via MAX485 modules"
+  - "ESPHome external component (C++ frame parser + 7-segment decoder) for RS-485 display reading"
+  - "Read-only climate entity (climate.hot_tub) exposing current water temperature in HA"
+  - "Six diagnostic sensors: display_string, raw_hex, display_state, decode_confidence, digit_values, last_update"
   - "Cross-check test verifying C++ lookup table matches Python reference"
-affects: [02-01-PLAN]
+  - "Dual UART config for Pin 5 + Pin 6 via MAX485"
+  - "10 YAML validation tests preventing ESPHome config regressions"
+affects: [02-button-injection]
 
 # Tech tracking
 tech-stack:
-  added: [esphome, cpp, esp32]
-  patterns: [external-component, dumb-decoder-firmware, timing-frame-detection, publish-on-change]
+  added: [esphome, arduino-framework, esp32dev]
+  patterns: [external-component, dual-uart, publish-on-change, millis-frame-timing, dumb-decoder-firmware]
 
 key-files:
   created:
-    - esphome/tubtron.yaml
-    - esphome/secrets.yaml
     - esphome/components/tubtron_display/__init__.py
     - esphome/components/tubtron_display/climate.py
     - esphome/components/tubtron_display/sensor.py
     - esphome/components/tubtron_display/text_sensor.py
     - esphome/components/tubtron_display/tubtron_display.h
     - esphome/components/tubtron_display/tubtron_display.cpp
+    - esphome/tubtron.yaml
+    - esphome/secrets.yaml
+    - esphome/.gitignore
     - tests/test_cross_check.py
+    - tests/test_esphome_yaml.py
   modified: []
 
 key-decisions:
-  - "TubtronDisplay does NOT inherit from UARTDevice -- stores two uart::UARTComponent pointers instead (dual UART)"
-  - "TubtronClimate is a separate class from TubtronDisplay -- parent component holds climate pointer and drives state updates"
-  - "Frame boundary detection uses millis() gap > 1ms (not micros()) for reliable timing"
-  - "SEVEN_SEG_TABLE uses struct array with markers for cross-check test parseability"
-  - "last_update uses RealTimeClock::get_default() with millis() fallback when SNTP not available"
-  - "Pin 6 data read and discarded to prevent UART buffer overflow (constant refresh pattern, not yet used)"
+  - "TubtronDisplay stores two UARTComponent pointers rather than inheriting from UARTDevice (dual UART)"
+  - "TubtronClimate is a separate class; parent TubtronDisplay holds climate pointer"
+  - "Frame boundary detection uses millis() gap > 1ms (not micros())"
+  - "SEVEN_SEG_TABLE formatted with markers for cross-check test parseability"
+  - "Pin 6 data read and discarded to prevent UART buffer overflow"
+  - "Timestamp sensor uses millis uptime instead of SNTP (simpler, no RealTimeClock dependency)"
+  - "climate.climate_schema() used instead of deprecated CLIMATE_SCHEMA"
+  - "Top-level esp32: block used instead of deprecated platform/board in esphome: block"
 
 patterns-established:
-  - "ESPHome external component: Python schema in __init__.py, platform files for climate/sensor/text_sensor, C++ in .h/.cpp"
-  - "Dual UART access via stored UARTComponent pointers with direct available()/read_byte() calls"
-  - "Cross-check testing: Python test parses C++ source to verify lookup tables match"
-  - "Publish-on-change: compare against last_* members before calling publish_state()"
+  - "ESPHome external component structure: __init__.py + platform files + C++ header/impl"
+  - "Dual UART access via stored pointers, not inheritance"
+  - "Publish-on-change: compare new values against last_* members before calling publish_state()"
+  - "Cross-language testing: Python test parses C++ source to verify lookup table consistency"
 
 requirements-completed: [DISP-01, DISP-02]
 
 # Metrics
-duration: 4min
+duration: 5min
 completed: 2026-03-14
 ---
 
 # Phase 1 Plan 2: ESPHome External Component Summary
 
-**ESPHome external component with C++ 7-segment decoder, read-only climate entity, 6 diagnostic sensors, and dual UART config -- cross-checked against Python reference by 7 automated tests**
+**ESPHome external component with C++ 7-segment decoder ported from Python, read-only climate entity (climate.hot_tub), six diagnostic sensors, dual UART config, and cross-check test -- compiles successfully on ESP32, 56 total tests passing**
 
 ## Performance
 
-- **Duration:** 4 min
+- **Duration:** ~5 min (across two sessions with human-verify checkpoint)
 - **Started:** 2026-03-14T01:28:48Z
-- **Completed:** 2026-03-14T01:32:45Z
-- **Tasks:** 2 (of 3 -- Task 3 is human-verify checkpoint)
-- **Files modified:** 9
+- **Completed:** 2026-03-14T01:54:00Z
+- **Tasks:** 3 (2 auto + 1 human-verify checkpoint with compilation fixes)
+- **Files created:** 11
 
 ## Accomplishments
-- C++ port of Python decode logic with 20-entry SEVEN_SEG_TABLE (confirmed/unverified entries, dp masking)
-- ESPHome external component with Python config schema (4 files) and C++ implementation (2 files)
-- Read-only climate entity (climate.hot_tub) with HEAT mode, 80-104F range, temperature persistence through OH/ICE/startup states
-- 6 diagnostic sensors: display_string, raw_hex, display_state, decode_confidence, digit_values (per-digit breakdown), last_update (timestamp)
-- Timing-based frame boundary detection (>1ms gap between bytes at 115200 baud)
-- Cross-check test: 7 tests parse C++ source and verify byte mappings match Python SEVEN_SEG_TABLE
-- Full test suite: 46 tests pass (39 from Plan 01 + 7 cross-check)
+- Complete ESPHome external component with C++ frame parser porting Python decode logic to firmware
+- Read-only climate entity exposing current water temperature in Home Assistant thermostat card
+- Six diagnostic sensors (display_string, raw_hex, display_state, decode_confidence, digit_values, last_update) for full RS-485 visibility
+- Cross-check test verifying C++ SEVEN_SEG_TABLE matches Python reference (prevents decode drift)
+- ESPHome compilation verified successfully on ESP32 Arduino framework
+- 10 YAML validation tests catching common ESPHome config errors before slow compile
+- Full test suite: 56 tests passing (39 Plan 01 + 7 cross-check + 10 YAML validation)
 
 ## Task Commits
 
@@ -82,53 +87,110 @@ Each task was committed atomically:
 
 1. **Task 1: ESPHome external component -- Python schema and C++ implementation** - `0b3b0ed` (feat)
 2. **Task 2: ESPHome YAML config and compile verification** - `329cb02` (chore)
-3. **Task 3: Verify ESPHome component structure and compilation** - checkpoint:human-verify (awaiting user)
+3. **Task 3: ESPHome compilation fixes and YAML validation tests** - `f8539e4` (fix)
 
 ## Files Created/Modified
-- `esphome/tubtron.yaml` - Main ESPHome config: dual UART, SNTP, climate, sensor, text_sensor platforms
-- `esphome/secrets.yaml` - Placeholder WiFi credentials
-- `esphome/components/tubtron_display/__init__.py` - Component config schema with dual UART parent IDs
-- `esphome/components/tubtron_display/climate.py` - Climate platform registration
+- `esphome/components/tubtron_display/__init__.py` - ESPHome Python config schema with dual UART references
+- `esphome/components/tubtron_display/climate.py` - Climate platform registration (read-only HEAT mode)
 - `esphome/components/tubtron_display/sensor.py` - Numeric sensor platform (decode_confidence)
 - `esphome/components/tubtron_display/text_sensor.py` - Text sensor platform (display_string, raw_hex, display_state, digit_values, last_update)
-- `esphome/components/tubtron_display/tubtron_display.h` - C++ header: TubtronDisplay + TubtronClimate class declarations
-- `esphome/components/tubtron_display/tubtron_display.cpp` - C++ implementation: frame parser, 7-segment decoder, state machine, publish logic
-- `tests/test_cross_check.py` - Cross-check test: parses C++ table and compares against Python reference
+- `esphome/components/tubtron_display/tubtron_display.h` - C++ header with TubtronDisplay and TubtronClimate class declarations
+- `esphome/components/tubtron_display/tubtron_display.cpp` - C++ implementation: SEVEN_SEG_TABLE, frame parser, state machine, publish-on-change logic
+- `esphome/tubtron.yaml` - Main ESPHome config with dual UART, external component, climate, and diagnostic sensors
+- `esphome/secrets.yaml` - Placeholder WiFi credentials
+- `esphome/.gitignore` - Exclude .esphome build artifacts and secrets
+- `tests/test_cross_check.py` - Cross-check test: parses C++ source and verifies byte mappings match Python table
+- `tests/test_esphome_yaml.py` - 10 YAML validation tests for ESPHome config structure
 
 ## Decisions Made
-- TubtronDisplay does NOT inherit from UARTDevice since we have two UARTs. Instead stores two uart::UARTComponent pointers and calls available()/read_byte() directly.
-- TubtronClimate is a separate class registered as a child of TubtronDisplay (parent sets climate pointer via set_climate()).
-- Frame boundary detection uses millis() with >1ms gap threshold. At 115200 baud one byte takes 87us, so 1ms gap is ~11 byte-times -- plenty of margin.
-- SEVEN_SEG_TABLE formatted as a struct array with SEVEN_SEG_TABLE_START/END markers for cross-check test parseability.
-- Pin 6 UART data is read and discarded in loop() to prevent buffer overflow. The constant refresh pattern (77 E6 E6) is not currently needed for display decoding.
-- ESPHome compile deferred to user machine -- CLI not available in development environment. YAML and Python syntax validated.
+- TubtronDisplay stores two UARTComponent pointers rather than inheriting from UARTDevice -- dual UART requires explicit pointer management
+- TubtronClimate is a separate class from TubtronDisplay; parent component holds climate pointer and drives state updates
+- Frame boundary detection uses millis() with >1ms gap (at 115200 baud, 1 byte = 87us, so 1ms gap = ~11 byte-times)
+- SEVEN_SEG_TABLE entries formatted one-per-line with SEVEN_SEG_TABLE_START/END markers for cross-check test regex extraction
+- Pin 6 data read and discarded to prevent UART buffer overflow (constant refresh pattern not needed for display decoding)
+- Switched from SNTP RealTimeClock to millis() uptime for last_update sensor -- simpler, no external time dependency
+- Used climate.climate_schema(TubtronClimate) API instead of deprecated climate.CLIMATE_SCHEMA
+- Moved platform/board from esphome: block to top-level esp32: block per ESPHome 2024.x deprecation
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
+
+**1. [Rule 1 - Bug] Deprecated ESPHome platform/board in esphome: block**
+- **Found during:** Task 3 (compilation verification)
+- **Issue:** ESPHome 2024.x removed support for `platform`/`board` inside `esphome:` block
+- **Fix:** Moved to top-level `esp32:` block with `framework: type: arduino`
+- **Files modified:** esphome/tubtron.yaml
+- **Verification:** ESPHome compile succeeds
+- **Committed in:** f8539e4
+
+**2. [Rule 1 - Bug] climate.CLIMATE_SCHEMA deprecated**
+- **Found during:** Task 3 (compilation verification)
+- **Issue:** `climate.CLIMATE_SCHEMA` no longer exists; must use `climate.climate_schema()` function
+- **Fix:** Changed to `climate.climate_schema(TubtronClimate)` and removed manual `cv.declare_id`
+- **Files modified:** esphome/components/tubtron_display/climate.py
+- **Verification:** ESPHome compile succeeds
+- **Committed in:** f8539e4
+
+**3. [Rule 1 - Bug] Missing ICON_FORMAT_TEXT constant**
+- **Found during:** Task 3 (compilation verification)
+- **Issue:** `ICON_FORMAT_TEXT` not available in esphome.const
+- **Fix:** Replaced with string literal `"mdi:format-text"`
+- **Files modified:** esphome/components/tubtron_display/text_sensor.py
+- **Verification:** ESPHome compile succeeds
+- **Committed in:** f8539e4
+
+**4. [Rule 1 - Bug] RealTimeClock::get_default() not available**
+- **Found during:** Task 3 (compilation verification)
+- **Issue:** No static accessor for time component; RealTimeClock API differs from expected
+- **Fix:** Simplified to millis()-based uptime timestamp, removed time/real_time_clock.h include
+- **Files modified:** esphome/components/tubtron_display/tubtron_display.cpp, tubtron_display.h
+- **Verification:** ESPHome compile succeeds
+- **Committed in:** f8539e4
+
+**5. [Rule 1 - Bug] Deprecated ClimateTraits methods**
+- **Found during:** Task 3 (compilation verification)
+- **Issue:** `set_supported_modes()` and `set_supports_action()` deprecated in ESPHome 2025.x
+- **Fix:** Changed to `add_supported_mode(climate::CLIMATE_MODE_HEAT)`, removed `set_supports_action`
+- **Files modified:** esphome/components/tubtron_display/tubtron_display.cpp
+- **Verification:** ESPHome compile succeeds
+- **Committed in:** f8539e4
+
+**6. [Rule 2 - Missing Critical] YAML validation tests**
+- **Found during:** Task 3 (compilation verification)
+- **Issue:** No automated way to catch ESPHome YAML config errors before slow compile
+- **Fix:** Added 10 YAML validation tests checking deprecated patterns, required sections, UART config
+- **Files modified:** tests/test_esphome_yaml.py (new)
+- **Verification:** All 10 tests pass
+- **Committed in:** f8539e4
+
+---
+
+**Total deviations:** 6 auto-fixed (5 bugs from ESPHome API changes, 1 missing critical test coverage)
+**Impact on plan:** All fixes necessary for successful ESPHome compilation. YAML tests prevent regressions. No scope creep.
 
 ## Issues Encountered
-
-- ESPHome CLI not available in the development environment, so compile verification is deferred to user's machine. YAML structure, Python config syntax, and C++ table integrity are validated via automated checks.
-- PyYAML not available for YAML parsing; used structural validation (key presence checks) as fallback.
+- ESPHome API has evolved significantly since the plan was written (deprecated CLIMATE_SCHEMA, changed ClimateTraits methods, moved platform/board to top-level block). All five issues resolved during compilation verification in a single commit.
 
 ## User Setup Required
 
-To compile and flash:
+Before flashing to hardware:
 1. Install ESPHome: `pip install esphome` or via HA addon
-2. Update `esphome/secrets.yaml` with your WiFi credentials
+2. Update `esphome/secrets.yaml` with real WiFi credentials
 3. Compile: `cd esphome && esphome compile tubtron.yaml`
 4. Flash: `cd esphome && esphome run tubtron.yaml` (via USB to ESP32)
+5. Verify `climate.hot_tub` appears in Home Assistant
 
 ## Next Phase Readiness
-- ESPHome external component ready for compilation and flashing
-- Read-only climate entity surfaces current temperature in HA
-- Phase 2 (button injection) will add control() implementation to TubtronClimate
-- Temperature ladder capture at known temperatures will finalize unverified lookup table entries
+- Phase 1 complete: RS-485 display reading firmware ready for hardware testing
+- Python decode library (Plan 01) and ESPHome component (Plan 02) form complete read path
+- Phase 2 (button injection) can build on this foundation for closed-loop control
+- Unverified lookup table entries will be finalized after temperature ladder capture session (physical tub access)
+- Hardware testing blocked on parts arrival (AliExpress lead time)
 
 ## Self-Check: PASSED
 
-All 9 created files verified present. Both commit hashes (0b3b0ed, 329cb02) verified in git log. 46 tests pass (39 Plan 01 + 7 cross-check).
+All 11 created files verified present. All 3 commit hashes (0b3b0ed, 329cb02, f8539e4) verified in git log. 56 tests pass.
 
 ---
 *Phase: 01-button-injection-mvp*
