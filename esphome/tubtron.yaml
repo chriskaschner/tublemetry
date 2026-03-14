@@ -1,0 +1,95 @@
+esphome:
+  name: tubtron
+  friendly_name: "Tubtron"
+  platform: ESP32
+  board: esp32dev
+
+# WiFi -- placeholder credentials, user will customize
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Tubtron Fallback"
+    password: "tubtron123"
+
+captive_portal:
+
+logger:
+  level: DEBUG
+
+api:
+  # No encryption key for initial development
+  # User should add encryption: key: ... for production
+
+ota:
+  - platform: esphome
+    # No password for initial development
+
+# SNTP time -- needed for last_update timestamp sensor
+time:
+  - platform: sntp
+    id: sntp_time
+
+# External component -- local path to our component
+external_components:
+  - source:
+      type: local
+      path: components
+
+# Dual UART for RS-485 display reading
+uart:
+  - id: uart_pin5
+    rx_pin: GPIO16
+    tx_pin: GPIO04
+    baud_rate: 115200
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+
+  - id: uart_pin6
+    rx_pin: GPIO17
+    tx_pin: GPIO05
+    baud_rate: 115200
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+
+# Main display decoder component
+tubtron_display:
+  id: hot_tub_display
+  uart_pin5: uart_pin5
+  uart_pin6: uart_pin6
+
+# Climate entity -- read-only thermostat card in HA
+climate:
+  - platform: tubtron_display
+    name: "Hot Tub"
+    id: hot_tub
+    tubtron_id: hot_tub_display
+
+# Diagnostic sensors
+sensor:
+  - platform: tubtron_display
+    tubtron_id: hot_tub_display
+    decode_confidence:
+      name: "Hot Tub Decode Confidence"
+      entity_category: "diagnostic"
+
+text_sensor:
+  - platform: tubtron_display
+    tubtron_id: hot_tub_display
+    display_string:
+      name: "Hot Tub Display"
+      entity_category: "diagnostic"
+    raw_hex:
+      name: "Hot Tub Raw Hex"
+      entity_category: "diagnostic"
+    display_state:
+      name: "Hot Tub Display State"
+      entity_category: "diagnostic"
+    digit_values:
+      name: "Hot Tub Digit Values"
+      entity_category: "diagnostic"
+    last_update:
+      name: "Hot Tub Last Update"
+      entity_category: "diagnostic"
