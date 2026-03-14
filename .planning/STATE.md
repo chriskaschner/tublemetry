@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-03-14T01:25:29Z"
-last_activity: 2026-03-14 -- Completed plan 01-01 (Python decode library)
+stopped_at: "01-02-PLAN.md Task 3 checkpoint:human-verify (awaiting user)"
+last_updated: "2026-03-14T01:33:00Z"
+last_activity: 2026-03-14 -- Completed plan 01-02 Tasks 1-2 (ESPHome external component), awaiting human-verify checkpoint
 progress:
   total_phases: 2
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
-  percent: 25
+  completed_plans: 2
+  percent: 50
 ---
 
 # Project State
@@ -26,28 +26,28 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 ## Current Position
 
 Phase: 1 of 2 (RS-485 Display Reading)
-Plan: 1 of 2 in current phase (01-01 complete, next: 01-02)
-Status: Executing
-Last activity: 2026-03-14 -- Completed plan 01-01 (Python decode library with TDD)
+Plan: 2 of 2 in current phase (01-02 Tasks 1-2 complete, awaiting human-verify checkpoint)
+Status: Checkpoint -- awaiting human verification of ESPHome component structure
+Last activity: 2026-03-14 -- Completed 01-02 Tasks 1-2 (ESPHome external component + YAML config)
 
-Progress: [##░░░░░░░░] 25%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
+- Total plans completed: 2
 - Average duration: 4min
-- Total execution time: 4min
+- Total execution time: 8min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 1/2 | 4min | 4min |
+| 01 | 2/2 | 8min | 4min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (4min)
-- Trend: N/A (first plan)
+- Last 5 plans: 01-01 (4min), 01-02 (4min)
+- Trend: Consistent 4min/plan
 
 *Updated after each plan completion*
 
@@ -66,6 +66,12 @@ Recent decisions affecting current work:
 - [01-01]: Dp bit (bit 7) masked before lookup -- values with/without decimal point decode to same character.
 - [01-01]: Dumb decoder principle: DisplayState reports display content faithfully, zero business logic on firmware side.
 - [01-01]: Temperature outside 80-120F accepted but flagged as low confidence rather than rejected.
+- [01-02]: TubtronDisplay stores two UARTComponent pointers (not inherited) for dual UART access.
+- [01-02]: TubtronClimate is a separate class from TubtronDisplay; parent holds climate pointer.
+- [01-02]: Frame boundary detection uses millis() gap > 1ms (not micros()).
+- [01-02]: SEVEN_SEG_TABLE formatted with markers for cross-check test parseability.
+- [01-02]: Pin 6 data read and discarded to prevent UART buffer overflow.
+- [01-02]: ESPHome compile deferred to user machine -- YAML and Python syntax validated.
 
 ### Pending Todos
 
@@ -79,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T01:25:29Z
-Stopped at: Completed 01-01-PLAN.md (Python decode library)
-Resume file: .planning/phases/01-button-injection-mvp/01-01-SUMMARY.md
+Last session: 2026-03-14T01:33:00Z
+Stopped at: 01-02-PLAN.md Task 3 checkpoint:human-verify (awaiting user verification of ESPHome component)
+Resume file: .planning/phases/01-button-injection-mvp/01-02-SUMMARY.md
