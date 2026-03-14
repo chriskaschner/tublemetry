@@ -25,12 +25,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. Temperature ladder captured at 5+ known temperatures, resolving the 72-solution 7-segment encoding ambiguity
   2. ESP32 decodes the Pin 5 RS-485 display stream in real time and extracts the current water temperature
   3. HA climate entity displays the current water temperature (read-only -- no setpoint control yet)
-**Plans:** 3 plans (2 complete, 1 gap closure)
+**Plans:** 3 plans (3 complete)
 
 Plans:
 - [x] 01-01-PLAN.md -- Python decode library: test infrastructure, 7-segment decoder, frame parser, display state machine (TDD)
 - [x] 01-02-PLAN.md -- ESPHome external component: C++ port of decode logic, climate entity, diagnostic sensors, YAML config
-- [ ] 01-03-PLAN.md -- Gap closure: fix requirement statuses, add structural YAML tests, prepare ladder capture tooling
+- [x] 01-03-PLAN.md -- Gap closure: fix requirement statuses, add structural YAML tests, prepare ladder capture tooling
 
 ### Phase 2: Button Injection + Closed-Loop Control
 **Goal**: User can set hot tub temperature from Home Assistant with closed-loop verification -- the system writes setpoints via button injection and reads confirmation via display decoding, with automatic drift correction
@@ -57,5 +57,5 @@ Phases execute in numeric order: 1 -> 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. RS-485 Display Reading | 2/3 | Gap closure pending | - |
+| 1. RS-485 Display Reading | 3/3 | Complete | 2026-03-14 |
 | 2. Button Injection + Closed-Loop Control | 0/3 | Not started | - |

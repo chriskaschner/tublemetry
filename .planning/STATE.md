@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: phase_complete
-stopped_at: "Completed 01-02-PLAN.md -- Phase 1 complete"
-last_updated: "2026-03-14T01:54:00Z"
-last_activity: 2026-03-14 -- Completed plan 01-02 (ESPHome external component), Phase 1 complete
+stopped_at: "Completed 01-03-PLAN.md -- Phase 1 fully complete (3/3 plans)"
+last_updated: "2026-03-14T02:37:05Z"
+last_activity: 2026-03-14 -- Completed 01-03 (gap closure: requirement fixes, YAML tests, ladder capture script, 77 tests pass)
 progress:
   total_phases: 2
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 2
+  total_plans: 3
+  completed_plans: 3
   percent: 50
 ---
 
@@ -26,27 +26,27 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 ## Current Position
 
 Phase: 1 of 2 (RS-485 Display Reading) -- COMPLETE
-Plan: 2 of 2 in current phase -- ALL PLANS COMPLETE
-Status: Phase 1 complete -- ready for Phase 2 (Button Injection) or hardware testing
-Last activity: 2026-03-14 -- Completed 01-02 (ESPHome external component compiles, 56 tests pass)
+Plan: 3 of 3 in current phase -- ALL PLANS COMPLETE
+Status: Phase 1 fully complete (3/3 plans) -- ready for Phase 2 (Button Injection) or hardware testing
+Last activity: 2026-03-14 -- Completed 01-03 (gap closure: requirement fixes, YAML tests, ladder capture script, 77 tests pass)
 
-Progress: [█████░░░░░] 50%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 2
+- Total plans completed: 3
 - Average duration: 5min
-- Total execution time: 9min
+- Total execution time: 14min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 2/2 | 9min | 5min |
+| 01 | 3/3 | 14min | 5min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (4min), 01-02 (5min)
+- Last 5 plans: 01-01 (4min), 01-02 (5min), 01-03 (5min)
 - Trend: Consistent ~5min/plan
 
 *Updated after each plan completion*
@@ -75,6 +75,9 @@ Recent decisions affecting current work:
 - [01-02]: Timestamp sensor uses millis() uptime instead of SNTP RealTimeClock (simpler, no external dependency).
 - [01-02]: climate.climate_schema(TubtronClimate) replaces deprecated climate.CLIMATE_SCHEMA.
 - [01-02]: Top-level esp32: block with framework: type: arduino replaces deprecated platform/board in esphome: block.
+- [01-03]: DISP-01/DISP-02 requirement statuses corrected from Complete to In Progress (hardware verification still pending).
+- [01-03]: Ladder capture uses byte index 3 for tens digit; ones digit derived from temperature % 10 in generate_lookup_update().
+- [01-03]: pytest pythonpath config added to pyproject.toml for importing 485/scripts modules in tests.
 
 ### Pending Todos
 
@@ -88,6 +91,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T01:54:00Z
-Stopped at: Completed 01-02-PLAN.md -- Phase 1 complete
-Resume file: .planning/phases/01-button-injection-mvp/01-02-SUMMARY.md
+Last session: 2026-03-14T02:37:05Z
+Stopped at: Completed 01-03-PLAN.md -- Phase 1 fully complete (3/3 plans)
+Resume file: .planning/phases/01-button-injection-mvp/01-03-SUMMARY.md
