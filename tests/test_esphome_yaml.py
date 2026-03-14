@@ -96,3 +96,96 @@ class TestEsphomeYaml:
         climate = config.get("climate", [])
         assert len(climate) >= 1, "Missing climate entity"
         assert climate[0].get("platform") == "tubtron_display"
+
+    def test_top_level_keys_not_nested(self):
+        """Critical ESPHome keys must be at the top level, not nested under other keys.
+
+        Catches the pattern where a leading space on a key (e.g., ' ota:') makes
+        it a child of the preceding key in YAML. This is valid YAML but breaks
+        ESPHome configuration.
+        """
+        config = load_yaml()
+
+        # All keys that MUST be top-level in an ESPHome config
+        expected_top_level = {
+            "esphome",
+            "esp32",
+            "wifi",
+            "api",
+            "ota",
+            "logger",
+            "uart",
+            "external_components",
+            "climate",
+            "sensor",
+            "text_sensor",
+        }
+
+        # Verify each expected key IS at the top level
+        for key in expected_top_level:
+            assert key in config, (
+                f"Expected top-level key '{key}' not found at root level. "
+                f"It may be accidentally nested under another key."
+            )
+
+        # Recursively check that none of these keys appear nested inside
+        # any top-level value (which would indicate accidental indentation)
+        def check_no_nesting(parent_key: str, value: object) -> None:
+            if isinstance(value, dict):
+                for nested_key in value:
+                    if nested_key in expected_top_level:
+                        raise AssertionError(
+                            f"Top-level key '{nested_key}' is incorrectly nested "
+                            f"under '{parent_key}'. Check YAML indentation."
+                        )
+                    check_no_nesting(f"{parent_key}.{nested_key}", value[nested_key])
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    check_no_nesting(f"{parent_key}[{i}]", item)
+
+        for key in config:
+            check_no_nesting(key, config[key])
+
+    def test_no_unexpected_indentation_in_raw_yaml(self):
+        """Top-level keys must start at column 0 in the raw YAML file.
+
+        Reads the file line by line and checks that known top-level keys
+        appear without leading whitespace. This catches indentation issues
+        at the text level before YAML parsing silently nests them.
+        """
+        known_top_level_keys = [
+            "esphome",
+            "esp32",
+            "wifi",
+            "api",
+            "ota",
+            "logger",
+            "uart",
+            "external_components",
+            "climate",
+            "sensor",
+            "text_sensor",
+            "captive_portal",
+            "tubtron_display",
+        ]
+
+        raw_text = YAML_FILE.read_text()
+        errors = []
+
+        for line_num, line in enumerate(raw_text.splitlines(), start=1):
+            stripped = line.lstrip()
+            for key in known_top_level_keys:
+                # Match "keyname:" at the start of the stripped line
+                if stripped.startswith(f"{key}:"):
+                    # The key definition must be at column 0 (no leading whitespace)
+                    if line != stripped:
+                        leading = len(line) - len(stripped)
+                        errors.append(
+                            f"Line {line_num}: '{key}:' has {leading} leading "
+                            f"space(s) -- should start at column 0"
+                        )
+
+        assert not errors, (
+            "Top-level keys found with unexpected indentation:\n"
+            + "\n".join(errors)
+        )

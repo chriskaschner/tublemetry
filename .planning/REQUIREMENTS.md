@@ -23,8 +23,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Display Reading
 
-- [x] **DISP-01**: ESP32 decodes RS-485 display stream to read current water temperature
-- [x] **DISP-02**: Current temperature populates HA climate entity (full thermostat card with current + target)
+- [ ] **DISP-01**: ESP32 decodes RS-485 display stream to read current water temperature -- In Progress: firmware ready, hardware verification pending, lookup table unverified (17/20 entries)
+- [ ] **DISP-02**: Current temperature populates HA climate entity (full thermostat card with current + target) -- In Progress: climate entity defined, hardware integration pending
 - [ ] **DISP-03**: Drift detection compares display reading vs expected setpoint and auto-corrects on mismatch
 
 ### Energy
@@ -63,8 +63,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DISP-01 | Phase 1 | Complete |
-| DISP-02 | Phase 1 | Complete |
+| DISP-01 | Phase 1 | In Progress |
+| DISP-02 | Phase 1 | In Progress |
 | BUTN-01 | Phase 2 | Pending |
 | BUTN-02 | Phase 2 | Pending |
 | BUTN-03 | Phase 2 | Pending |
@@ -83,4 +83,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-03-13 after roadmap revision (phase order reversed)*
+*Last updated: 2026-03-14 -- DISP-01/DISP-02 statuses revised per 01-VERIFICATION.md gap analysis (firmware ready, hardware verification pending)*
