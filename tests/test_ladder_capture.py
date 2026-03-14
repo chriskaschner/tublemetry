@@ -170,7 +170,8 @@ class TestBuildLadderEntry:
         )
         assert entry["temperature"] == 104
         assert entry["stable_frames"] == stable_104_frames
-        assert entry["byte_3_value"] == 0x33
+        # Byte index 3 in frame FE 06 30 7E 33 06 70 00 is 0x7E ("0" tens digit)
+        assert entry["byte_3_value"] == 0x7E
         assert isinstance(entry["raw_hex"], str)
 
     def test_raw_hex_format(self, stable_104_frames):
