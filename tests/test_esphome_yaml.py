@@ -97,6 +97,10 @@ class TestEsphomeYaml:
             "climate",
             "sensor",
             "text_sensor",
+            "safe_mode",
+            "button",
+            "binary_sensor",
+            "captive_portal",
         }
 
         for key in expected_top_level:
@@ -136,6 +140,9 @@ class TestEsphomeYaml:
             "text_sensor",
             "captive_portal",
             "tublemetry_display",
+            "safe_mode",
+            "button",
+            "binary_sensor",
         ]
 
         raw_text = YAML_FILE.read_text()
@@ -156,3 +163,127 @@ class TestEsphomeYaml:
             "Top-level keys found with unexpected indentation:\n"
             + "\n".join(errors)
         )
+
+
+class TestProductionConfig:
+    """Validate production-readiness of ESPHome config."""
+
+    def test_wifi_reboot_timeout(self):
+        """WiFi must have reboot_timeout for auto-recovery."""
+        config = load_yaml()
+        wifi = config.get("wifi", {})
+        assert "reboot_timeout" in wifi, "WiFi missing reboot_timeout"
+
+    def test_wifi_power_save_none(self):
+        """WiFi should use power_save_mode: none for reliability."""
+        config = load_yaml()
+        wifi = config.get("wifi", {})
+        assert wifi.get("power_save_mode") == "none"
+
+    def test_wifi_fallback_ap(self):
+        """WiFi must have fallback AP configured."""
+        config = load_yaml()
+        wifi = config.get("wifi", {})
+        assert "ap" in wifi, "WiFi missing fallback AP"
+        ap = wifi["ap"]
+        assert "ssid" in ap, "Fallback AP missing SSID"
+
+    def test_api_encryption(self):
+        """API must have encryption key configured."""
+        config = load_yaml()
+        api = config.get("api", {})
+        assert "encryption" in api, "API missing encryption"
+        assert "key" in api["encryption"], "API encryption missing key"
+
+    def test_api_reboot_timeout(self):
+        """API must have reboot_timeout for ghost connectivity recovery."""
+        config = load_yaml()
+        api = config.get("api", {})
+        assert "reboot_timeout" in api, "API missing reboot_timeout"
+
+    def test_ota_has_password(self):
+        """OTA must have a password to prevent unauthorized uploads."""
+        config = load_yaml()
+        ota = config.get("ota", [])
+        assert len(ota) >= 1, "Missing OTA config"
+        assert "password" in ota[0], "OTA missing password"
+
+    def test_safe_mode_configured(self):
+        """safe_mode must be explicitly configured at top level."""
+        config = load_yaml()
+        assert "safe_mode" in config, "Missing top-level safe_mode config"
+
+    def test_restart_button_exists(self):
+        """Must have a restart button for remote recovery."""
+        config = load_yaml()
+        buttons = config.get("button", [])
+        platforms = [b.get("platform") for b in buttons]
+        assert "restart" in platforms, "Missing restart button"
+
+    def test_safe_mode_button_exists(self):
+        """Must have a safe_mode button for remote recovery."""
+        config = load_yaml()
+        buttons = config.get("button", [])
+        platforms = [b.get("platform") for b in buttons]
+        assert "safe_mode" in platforms, "Missing safe_mode button"
+
+    def test_status_binary_sensor(self):
+        """Must have API status binary sensor."""
+        config = load_yaml()
+        sensors = config.get("binary_sensor", [])
+        platforms = [s.get("platform") for s in sensors]
+        assert "status" in platforms, "Missing status binary sensor"
+
+    def test_wifi_signal_sensor(self):
+        """Must have wifi_signal sensor for connectivity monitoring."""
+        config = load_yaml()
+        sensors = config.get("sensor", [])
+        platforms = [s.get("platform") for s in sensors]
+        assert "wifi_signal" in platforms, "Missing wifi_signal sensor"
+
+    def test_uptime_sensor(self):
+        """Must have uptime sensor for detecting unexpected reboots."""
+        config = load_yaml()
+        sensors = config.get("sensor", [])
+        platforms = [s.get("platform") for s in sensors]
+        assert "uptime" in platforms, "Missing uptime sensor"
+
+    def test_version_text_sensor(self):
+        """Must have version text sensor for firmware tracking."""
+        config = load_yaml()
+        text_sensors = config.get("text_sensor", [])
+        platforms = [s.get("platform") for s in text_sensors]
+        assert "version" in platforms, "Missing version text sensor"
+
+    def test_wifi_info_text_sensor(self):
+        """Must have wifi_info text sensor for IP/SSID/MAC."""
+        config = load_yaml()
+        text_sensors = config.get("text_sensor", [])
+        platforms = [s.get("platform") for s in text_sensors]
+        assert "wifi_info" in platforms, "Missing wifi_info text sensor"
+
+    def test_diagnostic_entities_have_category(self):
+        """All diagnostic sensors must have entity_category: diagnostic."""
+        config = load_yaml()
+
+        # Check numeric sensors
+        for sensor_entry in config.get("sensor", []):
+            platform = sensor_entry.get("platform", "")
+            if platform in ("wifi_signal", "uptime"):
+                assert sensor_entry.get("entity_category") == "diagnostic", (
+                    f"sensor.{platform} missing entity_category: diagnostic"
+                )
+
+        # Check text sensors (wifi_info has nested entries)
+        for ts in config.get("text_sensor", []):
+            platform = ts.get("platform", "")
+            if platform == "version":
+                assert ts.get("entity_category") == "diagnostic", (
+                    "text_sensor.version missing entity_category: diagnostic"
+                )
+            elif platform == "wifi_info":
+                for key in ("ip_address", "ssid", "mac_address"):
+                    if key in ts:
+                        assert ts[key].get("entity_category") == "diagnostic", (
+                            f"text_sensor.wifi_info.{key} missing entity_category"
+                        )
