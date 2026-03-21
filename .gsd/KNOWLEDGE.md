@@ -21,3 +21,7 @@
 - Floating GPIO pins without pull-down fire ISR at noise rate; always enable internal pull-down on clock/data inputs
 - MIN_PULSE_US debounce in ISR rejects edges <10µs apart (real clock pulses ~37µs)
 - safe_mode component auto-included by OTA since ESPHome 2024.6.0; explicit config only needed for custom settings
+- UniFi SSID "iota" broadcasts with trailing space in beacon ("iota "); ESPHome scan filter rejects on exact mismatch — secrets.yaml must match the actual beacon SSID exactly
+- New ESP32 board (ESP32-D0WD-V3 rev3.1, CH340 USB-serial) works at 460800 baud unlike old HiLetGo (CP2102, 115200 only)
+- Verbose logging required to see scan results — DEBUG level only shows "No networks found" without listing what was scanned
+- ESP32 WiFi connected at 192.168.0.92 (tublemetry.local), signal -18 to -23 dBm

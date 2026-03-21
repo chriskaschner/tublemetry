@@ -27,7 +27,7 @@ wifi:
         level: WARN
         format: "WiFi disconnected"
 
-captive_portal:
+# captive_portal:
 
 logger:
   level: DEBUG
