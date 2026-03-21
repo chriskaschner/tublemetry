@@ -65,11 +65,14 @@ The VS300FL4 does **not** use RS-485, BWA framing, or any documented Balboa prot
 
 | RJ45 Pin | T568B Color | Signal |
 |----------|-------------|--------|
-| 1 | Orange/White | +5V |
+| 1 | Orange/White | +5V power |
+| 2 | Orange | Temp Up (analog button) |
+| 3 | Green/White | Lights (analog button) |
 | 4 | Blue | GND |
 | 5 | Blue/White | Data (display segments, sampled on clock rising edge) |
 | 6 | Green | Clock (24 pulses per frame at 60Hz) |
-| 2,3,7,8 | Various | Analog button lines |
+| 7 | Brown/White | Jets (analog button) |
+| 8 | Brown | Temp Down (analog button) |
 
 ### Frame Structure (24 bits)
 
@@ -127,6 +130,45 @@ Segment mapping: `bit6=a, bit5=b, bit4=c, bit3=d, bit2=e, bit1=f, bit0=g`
 The stub cable is a standard T568B patch cable with one end cut, exposing Blue (Pin 4 / GND), Blue/White (Pin 5 / Data), and Green (Pin 6 / Clock).
 
 A resistor voltage divider is required on the Clock and Data lines to shift from 5V to 3.3V for ESP32 GPIO input.
+
+## Button Injection (Phase 2 -- planned)
+
+The VL-series topside panel uses analog button lines -- each button connects +5V to its pin through a resistive network. Pressing a button raises the pin voltage from idle (~2.3V) to ~4.7V.
+
+### Measured Voltages
+
+| Button | RJ45 Pin | Idle Voltage | Pressed Voltage | Delta |
+|--------|----------|--------------|-----------------|-------|
+| Temp Up | 2 | 2.82V | 4.69V | +1.87V |
+| Temp Down | 8 | 2.26V | 4.70V | +2.44V |
+| Lights | 3 | 2.27V | 4.71V | +2.44V |
+| Jets | 7 | 2.26V | 4.71V | +2.45V |
+
+Button simulation has been confirmed working by manually bridging +5V (Pin 1) to Pin 8 (Temp Down), which successfully lowered the temperature setpoint by 1F.
+
+### Circuit Design
+
+```
+ESP32 GPIO ──> AQY212EH photorelay ──> Button pin
+                                        │
+                   +5V (Pin 1) ─────────┘
+```
+
+- **AQY212EH** photorelays provide galvanic isolation between the ESP32 and the tub's sensitive analog button lines
+- When the ESP32 drives the relay LED, it closes the switch between +5V and the button pin, simulating a press
+- When idle, the relay is open (high-impedance) -- no interference with the panel
+- 4 channels needed: Temp Up (Pin 2), Temp Down (Pin 8), Lights (Pin 3), Jets (Pin 7)
+
+**Why photorelays?** The analog button lines are extremely sensitive to loading. An unterminated Cat5 breakout cable caused phantom Temp Up presses. Photorelays provide the high-impedance isolation needed to prevent interference when idle.
+
+### Re-Home Strategy
+
+To set a target temperature reliably without knowing the current setpoint:
+
+1. Press Temp Down 25 times (guarantees reaching the 80F floor regardless of starting point)
+2. Press Temp Up N times to reach the target temperature
+
+This eliminates drift and synchronization issues. Combined with display reading (Phase 1), the system can verify the setpoint actually changed (closed-loop control).
 
 ## Installation
 
