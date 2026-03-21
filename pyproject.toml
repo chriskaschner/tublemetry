@@ -1,5 +1,5 @@
 [project]
-name = "tubtron"
+name = "tublemetry"
 version = "0.1.0"
 description = "VS300FL4 hot tub RS-485 display decoder and automation"
 readme = "README.md"

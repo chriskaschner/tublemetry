@@ -1,14 +1,14 @@
 """7-segment byte-to-character decoder for VS300FL4 display stream.
 
-Encoding reference: MagnusPer/Balboa-GS510SZ (GS510SZ + VL801D).
+Encoding reference: MagnusPer/Balboa-GS510SZ (GS510SZ + VL801D), with
+VS300FL4-specific corrections confirmed via logic analyzer ladder capture
+(2026-03-20).
+
 Segment mapping: bit6=a, bit5=b, bit4=c, bit3=d, bit2=e, bit1=f, bit0=g.
 Bit 7 is the decimal point (dp) and is masked before lookup.
 
-Confirmed mappings (verified against captured data):
-  0x30 = "1", 0x70 = "7", 0x00 = " " (blank)
-
-Unverified mappings are derived from the GS510SZ reference and will be
-finalized after the temperature ladder capture session.
+All digit and letter entries below are confirmed against VS300FL4 captured data.
+VS300FL4 difference from GS510SZ: "9" = 0x73 (no bottom segment), not 0x7B.
 """
 
 # Segment bits (after masking dp):
@@ -22,7 +22,7 @@ finalized after the temperature ladder capture session.
 #   e    c
 #    dddd
 #
-# GS510SZ reference encoding (7-bit, dp masked off):
+# VS300FL4 confirmed encoding (7-bit, dp masked off):
 #   0: a,b,c,d,e,f    = 0x7E
 #   1: b,c             = 0x30
 #   2: a,b,d,e,g       = 0x6D
@@ -32,13 +32,15 @@ finalized after the temperature ladder capture session.
 #   6: a,c,d,e,f,g     = 0x5F
 #   7: a,b,c            = 0x70
 #   8: a,b,c,d,e,f,g   = 0x7F
-#   9: a,b,c,d,f,g     = 0x7B
+#   9: a,b,c,f,g       = 0x73  (NOT 0x7B -- no bottom segment)
 
-# Entries verified against VS300FL4 captured data
-_CONFIRMED_KEYS = frozenset([0x30, 0x70, 0x00])
+# All entries confirmed via VS300FL4 ladder capture 2026-03-20
+_CONFIRMED_KEYS = frozenset([
+    0x7E, 0x30, 0x6D, 0x79, 0x33, 0x5B, 0x5F, 0x70, 0x7F, 0x73,
+    0x00, 0x37, 0x0E, 0x4F, 0x0D, 0x0F,
+])
 
 # Full lookup table: masked 7-bit value -> character
-# Confirmed entries are verified; unverified entries from GS510SZ reference
 SEVEN_SEG_TABLE: dict[int, str] = {
     0x7E: "0",
     0x30: "1",
@@ -49,16 +51,18 @@ SEVEN_SEG_TABLE: dict[int, str] = {
     0x5F: "6",
     0x70: "7",
     0x7F: "8",
-    0x7B: "9",
+    0x73: "9",
     0x00: " ",  # blank / off
-    # Common non-digit patterns
-    0x37: "H",  # b,c,e,f,g (H segments)
+    # Letter patterns (confirmed via mode display captures)
+    0x37: "H",  # b,c,e,f,g
     0x0E: "L",  # d,e,f
-    0x67: "P",  # a,b,e,f,g
     0x4F: "E",  # a,d,e,f,g
-    0x01: "-",  # g only
-    0x03: "-",  # g,f -- alternate dash encoding seen in captures
     0x0D: "c",  # d,e,g (lowercase c)
+    0x0F: "t",  # d,e,f,g (lowercase t)
+    # Unverified (GS510SZ reference, not yet seen on VS300FL4)
+    0x67: "P",  # a,b,e,f,g
+    0x01: "-",  # g only
+    0x03: "-",  # g,f -- alternate dash encoding
     0x05: "r",  # e,g
     0x1D: "o",  # c,d,e,g (lowercase o)
 }

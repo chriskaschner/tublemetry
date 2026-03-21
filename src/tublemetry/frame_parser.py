@@ -20,7 +20,7 @@ refined after the temperature ladder capture.
 
 from dataclasses import dataclass
 
-from tubtron.decode import decode_7seg
+from tublemetry.decode import decode_7seg
 
 
 @dataclass(frozen=True)

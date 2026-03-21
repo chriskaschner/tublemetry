@@ -1,4 +1,4 @@
-"""Climate platform for Tubtron display decoder.
+"""Climate platform for Tublemetry display decoder.
 
 Exposes a read-only climate entity (climate.hot_tub) that reports the
 current water temperature decoded from the RS-485 display stream.
@@ -9,17 +9,17 @@ import esphome.config_validation as cv
 from esphome.components import climate
 from esphome.const import CONF_ID
 
-from . import TubtronDisplay, tubtron_display_ns
+from . import TublemetryDisplay, tublemetry_display_ns
 
-CONF_TUBTRON_ID = "tubtron_id"
+CONF_TUBLEMETRY_ID = "tublemetry_id"
 
-TubtronClimate = tubtron_display_ns.class_(
-    "TubtronClimate", climate.Climate, cg.Component
+TublemetryClimate = tublemetry_display_ns.class_(
+    "TublemetryClimate", climate.Climate, cg.Component
 )
 
-CONFIG_SCHEMA = climate.climate_schema(TubtronClimate).extend(
+CONFIG_SCHEMA = climate.climate_schema(TublemetryClimate).extend(
     {
-        cv.Required(CONF_TUBTRON_ID): cv.use_id(TubtronDisplay),
+        cv.Required(CONF_TUBLEMETRY_ID): cv.use_id(TublemetryDisplay),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -29,5 +29,5 @@ async def to_code(config):
     await cg.register_component(var, config)
     await climate.register_climate(var, config)
 
-    parent = await cg.get_variable(config[CONF_TUBTRON_ID])
+    parent = await cg.get_variable(config[CONF_TUBLEMETRY_ID])
     cg.add(parent.set_climate(var))

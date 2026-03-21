@@ -13,3 +13,21 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# ESPHome build cache
+esphome/.esphome/
+
+# Credentials
+esphome/secrets.yaml
+
+# Internal project management
+.planning/
+WORKLOG.md
+
+# Raw captures (large binary files, keep examples/ only)
+485/captures/
+485/*.csv
+485/*.sr
+485/*.pvs
+485/*.log
+485/*.txt

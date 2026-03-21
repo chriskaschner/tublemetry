@@ -1,4 +1,4 @@
-"""Sensor platform for Tubtron display decoder.
+"""Sensor platform for Tublemetry display decoder.
 
 Exposes the decode_confidence numeric sensor (entity_category: diagnostic).
 """
@@ -14,14 +14,14 @@ from esphome.const import (
 )
 
 
-from . import TubtronDisplay
+from . import TublemetryDisplay
 
-CONF_TUBTRON_ID = "tubtron_id"
+CONF_TUBLEMETRY_ID = "tublemetry_id"
 CONF_DECODE_CONFIDENCE = "decode_confidence"
 
 CONFIG_SCHEMA = cv.Schema(
     {
-        cv.Required(CONF_TUBTRON_ID): cv.use_id(TubtronDisplay),
+        cv.Required(CONF_TUBLEMETRY_ID): cv.use_id(TublemetryDisplay),
         cv.Optional(CONF_DECODE_CONFIDENCE): sensor.sensor_schema(
             unit_of_measurement=UNIT_PERCENT,
             icon=ICON_PERCENT,
@@ -33,7 +33,7 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 async def to_code(config):
-    parent = await cg.get_variable(config[CONF_TUBTRON_ID])
+    parent = await cg.get_variable(config[CONF_TUBLEMETRY_ID])
 
     if conf := config.get(CONF_DECODE_CONFIDENCE):
         sens = await sensor.new_sensor(conf)

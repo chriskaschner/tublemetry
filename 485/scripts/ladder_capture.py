@@ -28,16 +28,16 @@ from pathlib import Path
 from typing import IO, Any
 
 # Reference table for cross-checking results
-# Imported lazily to avoid import errors when tubtron package isn't installed
+# Imported lazily to avoid import errors when tublemetry package isn't installed
 _SEVEN_SEG_TABLE: dict[int, str] | None = None
 
 
 def _get_seven_seg_table() -> dict[int, str]:
-    """Lazy-load the SEVEN_SEG_TABLE from tubtron.decode."""
+    """Lazy-load the SEVEN_SEG_TABLE from tublemetry.decode."""
     global _SEVEN_SEG_TABLE
     if _SEVEN_SEG_TABLE is None:
         try:
-            from tubtron.decode import SEVEN_SEG_TABLE
+            from tublemetry.decode import SEVEN_SEG_TABLE
 
             _SEVEN_SEG_TABLE = SEVEN_SEG_TABLE
         except ImportError:
@@ -52,7 +52,7 @@ def _get_seven_seg_table() -> dict[int, str]:
                 0x5F: "6",
                 0x70: "7",
                 0x7F: "8",
-                0x7B: "9",
+                0x73: "9",
                 0x00: " ",
             }
     return _SEVEN_SEG_TABLE
@@ -318,6 +318,95 @@ def _print_summary(
     print()
 
 
+def flash_capture_loop(ser: Any, capture_seconds: float = 1.0) -> list[dict[str, Any]]:
+    """Flash-mode capture with background serial reading.
+
+    Continuously reads frames in a background thread. User types the
+    temperature currently shown on the display and presses Enter.
+    The most common frame from the last 2 seconds is recorded.
+    """
+    import threading
+    import time
+    from collections import Counter
+
+    frame_buffer: list[tuple[float, bytes]] = []
+    buffer_lock = threading.Lock()
+    running = threading.Event()
+    running.set()
+
+    buf = bytearray()
+
+    def reader():
+        nonlocal buf
+        while running.is_set():
+            data = ser.read(256)
+            if data:
+                ts = time.time()
+                buf.extend(data)
+                # Split on FE delimiter to extract variable-length frames
+                while True:
+                    try:
+                        idx = buf.index(0xFE, 1)
+                    except ValueError:
+                        break
+                    frame = bytes(buf[: idx + 1])  # include FE terminator
+                    buf = buf[idx + 1 :]
+                    if len(frame) >= 4:  # reject runts
+                        with buffer_lock:
+                            frame_buffer.append((ts, frame))
+                with buffer_lock:
+                    cutoff = time.time() - 10.0
+                    while frame_buffer and frame_buffer[0][0] < cutoff:
+                        frame_buffer.pop(0)
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    time.sleep(0.5)
+
+    ladder: list[dict[str, Any]] = []
+
+    print("\nFlash Capture Mode")
+    print("=" * 50)
+    print("1. Type the temperature on the display, press Enter")
+    print("2. Press Temp Down, type new setpoint while flashing, Enter")
+    print("3. Repeat until you have 10+ readings")
+    print("4. Type 'done' to finish\n")
+
+    while True:
+        temp_str = input("Temperature showing: ").strip()
+        if temp_str.lower() in ("done", "q", "quit"):
+            break
+        try:
+            temp = int(temp_str)
+        except ValueError:
+            print("  Enter a number or 'done'")
+            continue
+
+        now = time.time()
+        with buffer_lock:
+            recent = [f for ts, f in frame_buffer if now - ts < 2.0]
+
+        if not recent:
+            print("  No frames in buffer. Check connection.")
+            continue
+
+        counts = Counter(recent)
+        most_common, count = counts.most_common(1)[0]
+
+        entry = build_ladder_entry(
+            temperature=temp,
+            stable_frames=[most_common] * count,
+            timestamp=0.0,
+        )
+        ladder.append(entry)
+        hex_str = " ".join(f"{b:02X}" for b in most_common)
+        print(f"  Captured: {hex_str} ({count}/{len(recent)} frames)")
+
+    running.clear()
+    thread.join(timeout=2)
+    return ladder
+
+
 def main() -> None:
     """CLI entry point: guided temperature ladder capture."""
     parser = argparse.ArgumentParser(
@@ -373,6 +462,11 @@ The script will:
         default=Path("485/captures"),
         help="Output directory for CSV and JSON (default: 485/captures)",
     )
+    parser.add_argument(
+        "--flash",
+        action="store_true",
+        help="Flash capture mode: capture brief setpoint flashes instead of waiting for cooling",
+    )
 
     args = parser.parse_args()
 
@@ -407,56 +501,61 @@ The script will:
         sys.exit(1)
 
     ser.reset_input_buffer()
-    ladder: list[dict] = []
     import time
 
-    step = -1 if args.start > args.end else 1
-    temps = list(range(args.start, args.end + step, step))
+    if args.flash:
+        ladder = flash_capture_loop(ser, args.capture_seconds)
+        ser.close()
+    else:
+        ladder: list[dict] = []
 
-    for temp in temps:
-        print(f"\n--- Temperature: {temp}F ---")
-        input(f"Confirm the panel shows {temp}F, then press Enter to capture...")
+        step = -1 if args.start > args.end else 1
+        temps = list(range(args.start, args.end + step, step))
 
-        # Capture frames for the specified duration
-        frames: list[dict] = []
-        start_time = time.time()
-        while time.time() - start_time < args.capture_seconds:
-            data = ser.read(256)
-            if data and len(data) >= 8:
-                elapsed = time.time() - start_time
-                # Parse 8-byte frames from the data
-                for offset in range(0, len(data) - 7, 8):
-                    chunk = data[offset : offset + 8]
-                    if len(chunk) == 8:
-                        frames.append(
-                            {
-                                "timestamp": elapsed,
-                                "byte_count": 8,
-                                "raw_bytes": bytes(chunk),
-                            }
-                        )
+        for temp in temps:
+            print(f"\n--- Temperature: {temp}F ---")
+            input(f"Confirm the panel shows {temp}F, then press Enter to capture...")
 
-        stable = extract_stable_frames(frames)
-        if stable:
-            best = max(stable, key=lambda s: s["count"])
-            entry = build_ladder_entry(
-                temperature=temp,
-                stable_frames=[best["frame"]] * best["count"],
-                timestamp=best["first_timestamp"],
-            )
-            ladder.append(entry)
-            print(
-                f"  Captured: {entry['raw_hex']} "
-                f"({best['count']} stable frames)"
-            )
-        else:
-            print(f"  WARNING: No stable frames detected at {temp}F")
-            print("  Try waiting longer or checking connection.")
+            # Capture frames for the specified duration
+            frames: list[dict] = []
+            start_time = time.time()
+            while time.time() - start_time < args.capture_seconds:
+                data = ser.read(256)
+                if data and len(data) >= 8:
+                    elapsed = time.time() - start_time
+                    # Parse 8-byte frames from the data
+                    for offset in range(0, len(data) - 7, 8):
+                        chunk = data[offset : offset + 8]
+                        if len(chunk) == 8:
+                            frames.append(
+                                {
+                                    "timestamp": elapsed,
+                                    "byte_count": 8,
+                                    "raw_bytes": bytes(chunk),
+                                }
+                            )
 
-        if temp != temps[-1]:
-            input("Press Temp Down, wait for display to settle, then press Enter...")
+            stable = extract_stable_frames(frames)
+            if stable:
+                best = max(stable, key=lambda s: s["count"])
+                entry = build_ladder_entry(
+                    temperature=temp,
+                    stable_frames=[best["frame"]] * best["count"],
+                    timestamp=best["first_timestamp"],
+                )
+                ladder.append(entry)
+                print(
+                    f"  Captured: {entry['raw_hex']} "
+                    f"({best['count']} stable frames)"
+                )
+            else:
+                print(f"  WARNING: No stable frames detected at {temp}F")
+                print("  Try waiting longer or checking connection.")
 
-    ser.close()
+            if temp != temps[-1]:
+                input("Press Temp Down, wait for display to settle, then press Enter...")
+
+        ser.close()
 
     # Validate and generate results
     is_valid, errors = validate_ladder(ladder)

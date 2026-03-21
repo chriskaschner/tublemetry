@@ -2,7 +2,7 @@
 
 import pytest
 from tests.conftest import IDLE_FRAME_A, IDLE_FRAME_B, TEMP_DOWN_FRAME
-from tubtron.frame_parser import parse_pin5_frame, FrameResult
+from tublemetry.frame_parser import parse_pin5_frame, FrameResult
 
 
 class TestFrameParser:

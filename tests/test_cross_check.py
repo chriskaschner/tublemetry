@@ -10,20 +10,20 @@ compile or run the C++ code.
 import re
 from pathlib import Path
 
-from tubtron.decode import SEVEN_SEG_TABLE
+from tublemetry.decode import SEVEN_SEG_TABLE
 
 # Path to the C++ implementation file
 CPP_FILE = (
     Path(__file__).parent.parent
     / "esphome"
     / "components"
-    / "tubtron_display"
-    / "tubtron_display.cpp"
+    / "tublemetry_display"
+    / "tublemetry_display.cpp"
 )
 
 
 def parse_cpp_table() -> dict[int, str]:
-    """Parse the C++ SEVEN_SEG_TABLE from tubtron_display.cpp.
+    """Parse the C++ SEVEN_SEG_TABLE from tublemetry_display.cpp.
 
     Extracts entries between SEVEN_SEG_TABLE_START and SEVEN_SEG_TABLE_END
     markers. Each entry is expected in the format:
@@ -121,7 +121,7 @@ class TestCppPythonCrossCheck:
 
         digit_mappings = {
             0x7E: "0", 0x30: "1", 0x6D: "2", 0x79: "3", 0x33: "4",
-            0x5B: "5", 0x5F: "6", 0x70: "7", 0x7F: "8", 0x7B: "9",
+            0x5B: "5", 0x5F: "6", 0x70: "7", 0x7F: "8", 0x73: "9",
         }
 
         for byte_val, expected_digit in digit_mappings.items():

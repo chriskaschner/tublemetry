@@ -1,4 +1,4 @@
-"""Shared test fixtures and known frame data for tubtron tests."""
+"""Shared test fixtures and known frame data for tublemetry tests."""
 
 # Known idle frame at one temperature (FE present = idle state)
 # FE 06 70 30 00 06 70 00

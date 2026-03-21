@@ -4,12 +4,11 @@
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
-#include "esphome/components/uart/uart.h"
 
 #include <string>
 
 namespace esphome {
-namespace tubtron_display {
+namespace tublemetry_display {
 
 // 7-segment lookup table entry
 struct SegEntry {
@@ -17,22 +16,37 @@ struct SegEntry {
   char character;    // decoded character
 };
 
-// Forward declaration
-class TubtronClimate;
+// Frame constants
+static const uint8_t BITS_PER_FRAME = 24;
+static const uint8_t DIGITS_PER_FRAME = 3;
+static const uint8_t BITS_PER_DIGIT = 7;
 
-/// Main component: reads dual UARTs and decodes display frames.
-class TubtronDisplay : public Component {
+// Forward declaration
+class TublemetryClimate;
+
+// ISR-shared frame data (volatile, accessed from interrupt context)
+struct FrameData {
+  volatile uint32_t bits;          // accumulated bits (MSB-first)
+  volatile uint8_t bit_count;      // bits collected in current frame
+  volatile uint32_t last_frame;    // last completed frame (24 bits)
+  volatile bool frame_ready;       // new frame available for processing
+  volatile uint32_t last_edge_us;  // micros() of last clock rising edge
+  volatile uint32_t frame_count;   // total frames decoded (diagnostic)
+};
+
+/// Main component: reads synchronous clock+data GPIO and decodes display frames.
+class TublemetryDisplay : public Component {
  public:
   void setup() override;
   void loop() override;
   float get_setup_priority() const override;
 
-  // UART setters (called from Python codegen)
-  void set_uart_pin5(uart::UARTComponent *uart) { this->pin5_uart_ = uart; }
-  void set_uart_pin6(uart::UARTComponent *uart) { this->pin6_uart_ = uart; }
+  // GPIO pin setters (called from Python codegen)
+  void set_clock_pin(InternalGPIOPin *pin) { this->clock_pin_ = pin; }
+  void set_data_pin(InternalGPIOPin *pin) { this->data_pin_ = pin; }
 
   // Climate setter
-  void set_climate(TubtronClimate *climate) { this->climate_ = climate; }
+  void set_climate(TublemetryClimate *climate) { this->climate_ = climate; }
 
   // Diagnostic sensor setters
   void set_display_string_sensor(text_sensor::TextSensor *s) { this->display_string_sensor_ = s; }
@@ -42,18 +56,22 @@ class TubtronDisplay : public Component {
   void set_digit_values_sensor(text_sensor::TextSensor *s) { this->digit_values_sensor_ = s; }
   void set_last_update_sensor(text_sensor::TextSensor *s) { this->last_update_sensor_ = s; }
 
+  // ISR handler (must be public for static trampoline)
+  void IRAM_ATTR clock_isr_();
+
  protected:
-  // UART components (not inherited -- we have two)
-  uart::UARTComponent *pin5_uart_{nullptr};
-  uart::UARTComponent *pin6_uart_{nullptr};
+  // GPIO pins
+  InternalGPIOPin *clock_pin_{nullptr};
+  InternalGPIOPin *data_pin_{nullptr};
 
   // Climate entity
-  TubtronClimate *climate_{nullptr};
+  TublemetryClimate *climate_{nullptr};
 
-  // Pin 5 frame buffer
-  uint8_t pin5_buffer_[16];
-  uint8_t pin5_index_{0};
-  uint32_t pin5_last_byte_time_{0};
+  // ISR-shared data
+  FrameData isr_data_{};
+
+  // Data pin GPIO number (cached for fast ISR access)
+  uint8_t data_gpio_num_{0};
 
   // State tracking (publish only on change)
   float last_temperature_{NAN};
@@ -71,16 +89,15 @@ class TubtronDisplay : public Component {
   text_sensor::TextSensor *last_update_sensor_{nullptr};
 
   // Internal methods
-  void process_pin5_data_();
-  void decode_pin5_frame_(const uint8_t *frame, size_t len);
+  void process_frame_(uint32_t frame_bits);
   char decode_7seg_(uint8_t byte_val);
   void update_temperature_(const std::string &display_str);
   bool is_valid_temperature_(const std::string &str);
   void publish_timestamp_();
 };
 
-/// Read-only climate entity backed by TubtronDisplay.
-class TubtronClimate : public climate::Climate, public Component {
+/// Read-only climate entity backed by TublemetryDisplay.
+class TublemetryClimate : public climate::Climate, public Component {
  public:
   void setup() override {}
   float get_setup_priority() const override;
@@ -89,5 +106,5 @@ class TubtronClimate : public climate::Climate, public Component {
   void control(const climate::ClimateCall &call) override;
 };
 
-}  // namespace tubtron_display
+}  // namespace tublemetry_display
 }  // namespace esphome

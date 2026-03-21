@@ -2,7 +2,7 @@
 
 import pytest
 from tests.conftest import CONFIRMED_MAPPINGS
-from tubtron.decode import decode_7seg, SEVEN_SEG_TABLE
+from tublemetry.decode import decode_7seg, SEVEN_SEG_TABLE
 
 
 class TestDecode7seg:

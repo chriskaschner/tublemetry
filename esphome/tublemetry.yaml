@@ -1,6 +1,6 @@
 esphome:
-  name: tubtron
-  friendly_name: "Tubtron"
+  name: tublemetry
+  friendly_name: "Tublemetry"
 
 esp32:
   board: esp32dev
@@ -12,8 +12,8 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "Tubtron Fallback"
-    password: "tubtron123"
+    ssid: "Tublemetry Fallback"
+    password: "tublemetry123"
 
 captive_portal:
 
@@ -34,48 +34,37 @@ external_components:
       type: local
       path: components
 
-# Dual UART for RS-485 display reading
-uart:
-  - id: uart_pin5
-    rx_pin: GPIO16
-    tx_pin: GPIO04
-    baud_rate: 115200
-    data_bits: 8
-    parity: NONE
-    stop_bits: 1
-
-  - id: uart_pin6
-    rx_pin: GPIO17
-    tx_pin: GPIO05
-    baud_rate: 115200
-    data_bits: 8
-    parity: NONE
-    stop_bits: 1
-
-# Main display decoder component
-tubtron_display:
+# Synchronous clock+data display decoder
+# VS300FL4 protocol: Pin 6 = clock (24 pulses/frame at 60Hz), Pin 5 = data
+# Connect via RJ45 T-splitter. Voltage divider required (5V -> 3.3V).
+#
+# RJ45 wiring:
+#   Pin 4 (Blue)       -> ESP32 GND
+#   Pin 5 (Blue/White) -> voltage divider -> data_pin GPIO
+#   Pin 6 (Green)      -> voltage divider -> clock_pin GPIO
+tublemetry_display:
   id: hot_tub_display
-  uart_pin5: uart_pin5
-  uart_pin6: uart_pin6
+  clock_pin: GPIO16
+  data_pin: GPIO17
 
 # Climate entity -- read-only thermostat card in HA
 climate:
-  - platform: tubtron_display
+  - platform: tublemetry_display
     name: "Hot Tub"
     id: hot_tub
-    tubtron_id: hot_tub_display
+    tublemetry_id: hot_tub_display
 
 # Diagnostic sensors
 sensor:
-  - platform: tubtron_display
-    tubtron_id: hot_tub_display
+  - platform: tublemetry_display
+    tublemetry_id: hot_tub_display
     decode_confidence:
       name: "Hot Tub Decode Confidence"
       entity_category: "diagnostic"
 
 text_sensor:
-  - platform: tubtron_display
-    tubtron_id: hot_tub_display
+  - platform: tublemetry_display
+    tublemetry_id: hot_tub_display
     display_string:
       name: "Hot Tub Display"
       entity_category: "diagnostic"

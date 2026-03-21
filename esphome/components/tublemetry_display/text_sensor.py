@@ -1,4 +1,4 @@
-"""Text sensor platform for Tubtron display decoder.
+"""Text sensor platform for Tublemetry display decoder.
 
 Exposes diagnostic text sensors:
   - display_string: assembled display string (e.g. "104", "OH", "--")
@@ -13,9 +13,9 @@ import esphome.config_validation as cv
 from esphome.components import text_sensor
 from esphome.const import ENTITY_CATEGORY_DIAGNOSTIC
 
-from . import TubtronDisplay
+from . import TublemetryDisplay
 
-CONF_TUBTRON_ID = "tubtron_id"
+CONF_TUBLEMETRY_ID = "tublemetry_id"
 CONF_DISPLAY_STRING = "display_string"
 CONF_RAW_HEX = "raw_hex"
 CONF_DISPLAY_STATE = "display_state"
@@ -24,7 +24,7 @@ CONF_LAST_UPDATE = "last_update"
 
 CONFIG_SCHEMA = cv.Schema(
     {
-        cv.Required(CONF_TUBTRON_ID): cv.use_id(TubtronDisplay),
+        cv.Required(CONF_TUBLEMETRY_ID): cv.use_id(TublemetryDisplay),
         cv.Optional(CONF_DISPLAY_STRING): text_sensor.text_sensor_schema(
             icon="mdi:format-text",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -50,7 +50,7 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 async def to_code(config):
-    parent = await cg.get_variable(config[CONF_TUBTRON_ID])
+    parent = await cg.get_variable(config[CONF_TUBLEMETRY_ID])
 
     if conf := config.get(CONF_DISPLAY_STRING):
         sens = await text_sensor.new_text_sensor(conf)

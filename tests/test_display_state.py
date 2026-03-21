@@ -1,7 +1,7 @@
 """Tests for display state machine (temperature persistence, edge states)."""
 
 import pytest
-from tubtron.display_state import DisplayState, update_display
+from tublemetry.display_state import DisplayState, update_display
 
 
 class TestDisplayState:
