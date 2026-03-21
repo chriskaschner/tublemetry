@@ -12,7 +12,7 @@
 
 - [x] **S01: RS-485 Display Reading** `risk:medium` `depends:[]`
   > After this: Python decode library, ESPHome display-reading component, and ladder-capture tooling are complete and tested.
-- [ ] **S02: Firmware Hardening — WiFi, OTA, HA Integration** `risk:medium` `depends:[S01]`
+- [x] **S02: Firmware Hardening — WiFi, OTA, HA Integration** `risk:medium` `depends:[S01]`
   > After this: ESP32 reliably connects to WiFi, supports OTA updates, exposes all entities in Home Assistant with proper diagnostics and recovery mechanisms.
 - [ ] **S03: Button Injection + Closed-Loop Control** `risk:medium` `depends:[S02]`
   > After this: user can set tub temperature from Home Assistant with closed-loop verification and drift correction.
