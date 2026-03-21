@@ -31,3 +31,8 @@ WORKLOG.md
 485/*.pvs
 485/*.log
 485/*.txt
+
+# Original photos (keep web-sized versions in photos/web/)
+photos/*.jpeg
+photos/*.jpg
+!photos/web/

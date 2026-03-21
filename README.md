@@ -4,10 +4,57 @@ ESPHome-based hot tub automation for Balboa VS300FL4 controllers. Reads the tops
 
 This is the first published automation for the Balboa VS-series board family. The VS300FL4 (PCB: VS500Z) uses a synchronous clock+data protocol that is completely different from the BWA Wi-Fi protocol used by newer BP-series boards.
 
+![Topside panel showing 104F](photos/web/topside-panel.jpg)
+
+## Spa
+
+Developed on an [Evolution by Strong Spas Rockport](https://www.costco.com/p/-/evolution-by-strong-spas-rockport-27-jet-6-or-7-person-rotomolded-spa-plug-n-play/100390145) (Costco Item 1003651).
+
+| Spec | Value |
+|------|-------|
+| Model | Evolution by Strong Spas Rockport 27-Jet |
+| Seating | Lounger for up to 6, or non-lounger for up to 7 |
+| Jets | 27 stainless steel |
+| Water capacity | 300 US gallons |
+| Dimensions | 74.5" L x 74.5" W x 32" H (outside cabinet) |
+| Shell | 66" x 66" x 30" (inside), rugged resin (rotomolded) |
+| Weight | 425 lbs dry, 2,933 lbs filled |
+| Pump | 1x 2BHP (1.5CHP) 2-speed |
+| Heater | 1kW / 4kW stainless steel all-season |
+| Electrical | 120V plug-n-play (GFCI cord included), convertible to 240V |
+| Sanitation | Ozone |
+| Controller | Balboa VS300FL4 (PCB: VS500Z, P/N 22972_E2) |
+| Topside panel | Balboa VL-series (VL401/VL403/VL406U) -- digital backlit, analog buttons, no microcontroller |
+| Features | Built-in ice bucket with lid, dual water columns, programmable LED underwater lighting, headrests |
+| Cover | Heavy-duty 4" to 2" tapered vinyl soft cover (R-13.8), locking clips, lifting handles |
+| Steps | Included |
+
+This controller is common in rotomolded spas from Strong Spas, Lifesmart, AquaRest, and other brands sold at Costco, Sam's Club, and Home Depot. If your tub has a VL-series topside panel with a 3-digit 7-segment display and an RJ45 connector at J1, this project likely applies.
+
+### Identifying Your Board
+
+![Balboa VS300FL4 controller label](photos/web/controller-label.jpg)
+*Balboa VS300FL4 rating label -- 120V/240V, 16A/32A, P/N 54626-03*
+
+![Strong Industries model plate](photos/web/spa-model-plate.jpg)
+*Strong Industries model plate -- Model S6-0001*
+
+![PCB label close-up](photos/web/pcb-label.jpg)
+*PCB label: VS300FLXR1B, Balboa P/N 22972_E2, VS500Z*
+
+### Board and Connectors
+
+![VS500Z board overview](photos/web/board-overview.jpg)
+*VS500Z board with J1 RJ45 connector (topside panel cable plugged in)*
+
+![J1 RJ45 connector close-up](photos/web/j1-connector.jpg)
+*J1 RJ45 jack -- this is where you tap the clock and data signals*
+
+![T568B stub cable vs OEM panel cable](photos/web/cable-comparison.jpg)
+*Left: T568B stub cable (standard colors). Right: OEM panel cable (non-standard colors). Always go by pin number, not wire color, when working with the OEM cable.*
+
 ## Hardware
 
-- **Controller**: Balboa VS300FL4 (PCB: VS500Z, P/N 22972_E2)
-- **Topside panel**: VL-series (VL401/VL403/VL406U) -- analog, no microcontroller
 - **ESP32**: WROOM-32 (any dev board)
 - **Connection**: RJ45 T-splitter at J1, tapping 3 wires (clock, data, ground)
 - **Level shifting**: Voltage divider required (5V signals to 3.3V ESP32 GPIO)
