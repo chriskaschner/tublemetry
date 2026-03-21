@@ -1,6 +1,10 @@
 esphome:
   name: tublemetry
   friendly_name: "Tublemetry"
+  on_boot:
+    priority: 600
+    then:
+      - logger.log: "Tublemetry booted"
 
 esp32:
   board: esp32dev
@@ -11,10 +15,17 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   power_save_mode: none
-  output_power: 20dB
+  # Auto-reboot if WiFi stays disconnected for 10 minutes
+  reboot_timeout: 10min
   ap:
     ssid: "Tublemetry Fallback"
     password: !secret ota_password
+  on_connect:
+    - logger.log: "WiFi connected"
+  on_disconnect:
+    - logger.log:
+        level: WARN
+        format: "WiFi disconnected"
 
 captive_portal:
 
@@ -24,57 +35,65 @@ logger:
 api:
   encryption:
     key: !secret api_key
+  # Reboot if HA doesn't connect for 15 minutes (catches ghost connectivity)
+  reboot_timeout: 15min
 
 ota:
   - platform: esphome
     password: !secret ota_password
 
-# External component -- local path to our component
-external_components:
-  - source:
-      type: local
-      path: components
+# Safe mode: after 10 consecutive boot failures, enter minimal WiFi+OTA mode
+# A boot that survives 30s counts as successful
+safe_mode:
+  num_attempts: 10
+  boot_is_good_after: 30s
+  on_safe_mode:
+    - logger.log:
+        level: ERROR
+        format: "SAFE MODE ACTIVE — OTA recovery only"
 
-# Synchronous clock+data display decoder
-# VS300FL4 protocol: Pin 6 = clock (24 pulses/frame at 60Hz), Pin 5 = data
-# Connect via RJ45 T-splitter. Voltage divider required (5V -> 3.3V).
-#
-# RJ45 wiring:
-#   Pin 4 (Blue)       -> ESP32 GND
-#   Pin 5 (Blue/White) -> voltage divider -> data_pin GPIO
-#   Pin 6 (Green)      -> voltage divider -> clock_pin GPIO
-#
-# NOTE: Pull-downs prevent floating-pin noise from starving WiFi when
-# the display cable is not connected.
-tublemetry_display:
-  id: hot_tub_display
-  clock_pin:
-    number: GPIO16
-    mode:
-      input: true
-      pulldown: true
-  data_pin:
-    number: GPIO17
-    mode:
-      input: true
-      pulldown: true
+# --- Buttons (remote management) ---
+button:
+  - platform: restart
+    name: "Hot Tub Restart"
+  - platform: safe_mode
+    name: "Hot Tub Safe Mode"
 
-# Climate entity -- read-only thermostat card in HA
-climate:
-  - platform: tublemetry_display
-    name: "Hot Tub"
-    id: hot_tub
-    tublemetry_id: hot_tub_display
+# --- Binary Sensors ---
+binary_sensor:
+  - platform: status
+    name: "Hot Tub API Status"
 
-# Diagnostic sensors
+# --- Numeric Sensors ---
 sensor:
+  - platform: wifi_signal
+    name: "Hot Tub WiFi Signal"
+    update_interval: 60s
+    entity_category: "diagnostic"
+  - platform: uptime
+    name: "Hot Tub Uptime"
+    entity_category: "diagnostic"
   - platform: tublemetry_display
     tublemetry_id: hot_tub_display
     decode_confidence:
       name: "Hot Tub Decode Confidence"
       entity_category: "diagnostic"
 
+# --- Text Sensors ---
 text_sensor:
+  - platform: version
+    name: "Hot Tub Firmware Version"
+    entity_category: "diagnostic"
+  - platform: wifi_info
+    ip_address:
+      name: "Hot Tub IP Address"
+      entity_category: "diagnostic"
+    ssid:
+      name: "Hot Tub WiFi SSID"
+      entity_category: "diagnostic"
+    mac_address:
+      name: "Hot Tub MAC Address"
+      entity_category: "diagnostic"
   - platform: tublemetry_display
     tublemetry_id: hot_tub_display
     display_string:
@@ -92,3 +111,41 @@ text_sensor:
     last_update:
       name: "Hot Tub Last Update"
       entity_category: "diagnostic"
+
+# --- External Component ---
+external_components:
+  - source:
+      type: local
+      path: components
+
+# Synchronous clock+data display decoder
+# VS300FL4 protocol: Pin 6 = clock (24 pulses/frame at 60Hz), Pin 5 = data
+# Connect via RJ45 T-splitter. Voltage divider required (5V -> 3.3V).
+#
+# RJ45 wiring:
+#   Pin 4 (Blue)       -> ESP32 GND
+#   Pin 5 (Blue/White) -> voltage divider -> data_pin GPIO
+#   Pin 6 (Green)      -> voltage divider -> clock_pin GPIO
+#
+# Pull-downs prevent floating-pin noise when display cable is not connected.
+tublemetry_display:
+  id: hot_tub_display
+  clock_pin:
+    number: GPIO16
+    mode:
+      input: true
+      pulldown: true
+  data_pin:
+    number: GPIO17
+    mode:
+      input: true
+      pulldown: true
+
+# Climate entity — thermostat card in HA
+# Phase 1: read-only (current temperature from display stream)
+# Phase 2: setpoint control via button injection
+climate:
+  - platform: tublemetry_display
+    name: "Hot Tub"
+    id: hot_tub
+    tublemetry_id: hot_tub_display
