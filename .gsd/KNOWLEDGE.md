@@ -1,0 +1,23 @@
+- GS510SZ reference encoding used as base for unverified 7-segment mappings (bit6=a through bit0=g)
+- Dp bit (bit 7) masked before lookup -- 0x30 and 0xB0 decode to same character
+- DisplayState uses pure-function update pattern returning new state objects
+- Temperature outside 80-120F flagged as low confidence rather than rejected
+- TubtronDisplay stores two UARTComponent pointers rather than inheriting from UARTDevice (dual UART)
+- TubtronClimate is a separate class; parent TubtronDisplay holds climate pointer
+- Frame boundary detection uses millis() gap > 1ms (not micros())
+- SEVEN_SEG_TABLE formatted with markers for cross-check test parseability
+- Pin 6 data read and discarded to prevent UART buffer overflow
+- Timestamp sensor uses millis uptime instead of SNTP (simpler, no RealTimeClock dependency)
+- climate.climate_schema() used instead of deprecated CLIMATE_SCHEMA
+- Top-level esp32: block used instead of deprecated platform/board in esphome: block
+- OTA indentation was already correct in tubtron.yaml (no fix needed -- verification report was based on stale data)
+- Ladder capture byte_3_value extracts byte at index 3 (tens digit for 3-digit temps); ones digit derived from temperature % 10 in generate_lookup_update
+- pytest pythonpath config added to pyproject.toml for importing 485/scripts modules
+- HiLetGo ESP-32S (ESP32-D0WDQ6 rev1) WiFi radio dead on first board -- zero networks in scan despite full erase + reflash + bare-bones firmware
+- esptool baud 460800 fails on CP2102 USB-serial; use 115200
+- After erase_flash, must write all 4 partitions explicitly (bootloader @ 0x1000, partitions @ 0x8000, boot_app0 @ 0xe000, firmware @ 0x10000) or board boot-loops with RTCWDT_RTC_RESET
+- esp-idf framework causes boot loop on this ESP32-D0WDQ6 rev1 board; Arduino framework works
+- ISR attach_interrupt in ESPHome takes instance pointer argument (not void callback) -- signature: attach_interrupt(callback, instance, mode)
+- Floating GPIO pins without pull-down fire ISR at noise rate; always enable internal pull-down on clock/data inputs
+- MIN_PULSE_US debounce in ISR rejects edges <10µs apart (real clock pulses ~37µs)
+- safe_mode component auto-included by OTA since ESPHome 2024.6.0; explicit config only needed for custom settings

@@ -1,0 +1,15 @@
+- GS510SZ reference encoding used as base for unverified 7-segment mappings (bit6=a through bit0=g)
+- Dp bit (bit 7) masked before lookup -- 0x30 and 0xB0 decode to same character
+- DisplayState uses pure-function update pattern returning new state objects
+- Temperature outside 80-120F flagged as low confidence rather than rejected
+- TubtronDisplay stores two UARTComponent pointers rather than inheriting from UARTDevice (dual UART)
+- TubtronClimate is a separate class; parent TubtronDisplay holds climate pointer
+- Frame boundary detection uses millis() gap > 1ms (not micros())
+- SEVEN_SEG_TABLE formatted with markers for cross-check test parseability
+- Pin 6 data read and discarded to prevent UART buffer overflow
+- Timestamp sensor uses millis uptime instead of SNTP (simpler, no RealTimeClock dependency)
+- climate.climate_schema() used instead of deprecated CLIMATE_SCHEMA
+- Top-level esp32: block used instead of deprecated platform/board in esphome: block
+- OTA indentation was already correct in tubtron.yaml (no fix needed -- verification report was based on stale data)
+- Ladder capture byte_3_value extracts byte at index 3 (tens digit for 3-digit temps); ones digit derived from temperature % 10 in generate_lookup_update
+- pytest pythonpath config added to pyproject.toml for importing 485/scripts modules
