@@ -53,6 +53,10 @@ static const size_t SEVEN_SEG_TABLE_SIZE = sizeof(SEVEN_SEG_TABLE) / sizeof(SEVE
 // A gap > 500us between clock edges means a new frame.
 static const uint32_t FRAME_GAP_US = 500;
 
+// Minimum microseconds between valid clock edges (noise rejection).
+// Real clock pulses are ~37us apart; anything shorter is floating-pin noise.
+static const uint32_t MIN_PULSE_US = 10;
+
 // Temperature range for valid readings (Fahrenheit)
 static const float TEMP_MIN = 80.0f;
 static const float TEMP_MAX = 120.0f;
@@ -61,8 +65,10 @@ static const float TEMP_MAX = 120.0f;
 static TublemetryDisplay *isr_instance_ = nullptr;
 
 /// ISR trampoline -- static function that calls instance method
-static void IRAM_ATTR clock_isr_trampoline() {
-  if (isr_instance_ != nullptr) {
+static void IRAM_ATTR clock_isr_trampoline(TublemetryDisplay *instance) {
+  if (instance != nullptr) {
+    instance->clock_isr_();
+  } else if (isr_instance_ != nullptr) {
     isr_instance_->clock_isr_();
   }
 }
@@ -70,6 +76,12 @@ static void IRAM_ATTR clock_isr_trampoline() {
 /// ISR: called on every clock rising edge. Samples data pin and accumulates bits.
 void IRAM_ATTR TublemetryDisplay::clock_isr_() {
   uint32_t now = micros();
+
+  // Reject noise: ignore edges closer than MIN_PULSE_US apart
+  uint32_t elapsed = now - this->isr_data_.last_edge_us;
+  if (elapsed < MIN_PULSE_US) {
+    return;
+  }
 
   // Detect frame boundary: gap > FRAME_GAP_US means new frame
   if (this->isr_data_.bit_count > 0 && (now - this->isr_data_.last_edge_us) > FRAME_GAP_US) {
@@ -143,7 +155,7 @@ void TublemetryDisplay::setup() {
 
   // Set up ISR trampoline
   isr_instance_ = this;
-  this->clock_pin_->attach_interrupt(clock_isr_trampoline, gpio::INTERRUPT_RISING_EDGE);
+  this->clock_pin_->attach_interrupt(clock_isr_trampoline, this, gpio::INTERRUPT_RISING_EDGE);
 
   ESP_LOGI(TAG, "Clock interrupt attached, waiting for frames...");
 }
