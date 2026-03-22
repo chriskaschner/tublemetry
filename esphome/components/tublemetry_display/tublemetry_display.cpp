@@ -158,9 +158,19 @@ void TublemetryDisplay::setup() {
   this->clock_pin_->attach_interrupt(clock_isr_trampoline, this, gpio::INTERRUPT_RISING_EDGE);
 
   ESP_LOGI(TAG, "Clock interrupt attached, waiting for frames...");
+
+  // Set up button injector if configured
+  if (this->injector_ != nullptr) {
+    this->injector_->setup();
+  }
 }
 
 void TublemetryDisplay::loop() {
+  // Drive button injector state machine (non-blocking)
+  if (this->injector_ != nullptr) {
+    this->injector_->loop();
+  }
+
   // Check if ISR has a new frame ready
   if (!this->isr_data_.frame_ready) {
     return;
@@ -311,6 +321,11 @@ void TublemetryDisplay::update_temperature_(const std::string &display_str) {
       ESP_LOGI(TAG, "Temperature: %.0f F", temp);
     }
 
+    // Feed temperature to button injector for closed-loop verification
+    if (this->injector_ != nullptr) {
+      this->injector_->feed_display_temperature(temp);
+    }
+
     if (state != this->last_display_state_) {
       this->last_display_state_ = state;
       if (this->display_state_sensor_ != nullptr) {
@@ -374,9 +389,26 @@ climate::ClimateTraits TublemetryClimate::traits() {
 }
 
 void TublemetryClimate::control(const climate::ClimateCall &call) {
-  // Phase 1: read-only. Setpoint control will be implemented in Phase 2
-  // when button injection is available.
-  ESP_LOGW(TAG, "Climate control not supported yet (read-only in Phase 1)");
+  if (call.get_target_temperature().has_value()) {
+    float target = *call.get_target_temperature();
+
+    // Publish the target immediately so HA UI reflects the request
+    this->target_temperature = target;
+    this->publish_state();
+
+    if (this->injector_ != nullptr && this->injector_->is_configured()) {
+      if (!this->injector_->request_temperature(target)) {
+        ESP_LOGW(TAG, "Button injection rejected target %.0fF", target);
+      }
+    } else {
+      ESP_LOGW(TAG, "No button injector configured — target set in HA only (no physical control)");
+    }
+  }
+
+  if (call.get_mode().has_value()) {
+    this->mode = *call.get_mode();
+    this->publish_state();
+  }
 }
 
 }  // namespace tublemetry_display

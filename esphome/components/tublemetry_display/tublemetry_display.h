@@ -5,6 +5,7 @@
 #include "esphome/components/climate/climate.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
+#include "button_injector.h"
 
 #include <string>
 
@@ -49,6 +50,9 @@ class TublemetryDisplay : public Component {
   // Climate setter
   void set_climate(TublemetryClimate *climate) { this->climate_ = climate; }
 
+  // Button injector setter
+  void set_button_injector(ButtonInjector *injector) { this->injector_ = injector; }
+
   // Diagnostic sensor setters
   void set_display_string_sensor(text_sensor::TextSensor *s) { this->display_string_sensor_ = s; }
   void set_raw_hex_sensor(text_sensor::TextSensor *s) { this->raw_hex_sensor_ = s; }
@@ -67,6 +71,9 @@ class TublemetryDisplay : public Component {
 
   // Climate entity
   TublemetryClimate *climate_{nullptr};
+
+  // Button injector (optional — nullptr if no output pins configured)
+  ButtonInjector *injector_{nullptr};
 
   // ISR-shared data
   FrameData isr_data_{};
@@ -97,14 +104,19 @@ class TublemetryDisplay : public Component {
   void publish_timestamp_();
 };
 
-/// Read-only climate entity backed by TublemetryDisplay.
+/// Climate entity backed by TublemetryDisplay with optional button injection.
 class TublemetryClimate : public climate::Climate, public Component {
  public:
   void setup() override {}
   float get_setup_priority() const override;
 
+  void set_button_injector(ButtonInjector *injector) { this->injector_ = injector; }
+
   climate::ClimateTraits traits() override;
   void control(const climate::ClimateCall &call) override;
+
+ protected:
+  ButtonInjector *injector_{nullptr};
 };
 
 }  // namespace tublemetry_display

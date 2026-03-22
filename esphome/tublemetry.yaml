@@ -140,10 +140,20 @@ tublemetry_display:
     mode:
       input: true
       pulldown: true
+  # Button injection via AQY212EH photorelays
+  # GPIO18 -> photorelay -> RJ45 pin 2 (Temp Up button line)
+  # GPIO19 -> photorelay -> RJ45 pin 3 (Temp Down button line)
+  # Omit these two lines for read-only mode (no physical button control).
+  temp_up_pin: GPIO18
+  temp_down_pin: GPIO19
+  # Timing (defaults shown — adjust after real-hardware testing)
+  # press_duration_ms: 200
+  # inter_press_delay_ms: 300
+  # verify_timeout_ms: 10000
+  # cooldown_ms: 1000
 
 # Climate entity — thermostat card in HA
-# Phase 1: read-only (current temperature from display stream)
-# Phase 2: setpoint control via button injection
+# Sets target temperature via button injection with closed-loop verification
 climate:
   - platform: tublemetry_display
     name: "Hot Tub"
