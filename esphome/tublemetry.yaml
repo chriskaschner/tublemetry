@@ -141,8 +141,8 @@ tublemetry_display:
       input: true
       pulldown: true
   # Button injection via AQY212EH photorelays
-  # GPIO18 -> photorelay -> RJ45 pin 2 (Temp Up button line)
-  # GPIO19 -> photorelay -> RJ45 pin 3 (Temp Down button line)
+  # GPIO18 -> photorelay -> RJ45 pin 2 (Temp Up button line, Orange)
+  # GPIO19 -> photorelay -> RJ45 pin 8 (Temp Down button line, Brown)
   # Omit these two lines for read-only mode (no physical button control).
   temp_up_pin: GPIO18
   temp_down_pin: GPIO19
