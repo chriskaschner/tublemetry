@@ -52,12 +52,24 @@ safe_mode:
         level: ERROR
         format: "SAFE MODE ACTIVE — OTA recovery only"
 
-# --- Buttons (remote management) ---
+# --- Buttons (remote management + hardware test) ---
 button:
   - platform: restart
     name: "Hot Tub Restart"
+    entity_category: "diagnostic"
   - platform: safe_mode
     name: "Hot Tub Safe Mode"
+    entity_category: "diagnostic"
+  - platform: template
+    name: "Hot Tub Temp Up (Test)"
+    entity_category: "diagnostic"
+    on_press:
+      - lambda: id(hot_tub_display).test_press_up();
+  - platform: template
+    name: "Hot Tub Temp Down (Test)"
+    entity_category: "diagnostic"
+    on_press:
+      - lambda: id(hot_tub_display).test_press_down();
 
 # --- Binary Sensors ---
 binary_sensor:
@@ -141,11 +153,11 @@ tublemetry_display:
       input: true
       pulldown: true
   # Button injection via AQY212EH photorelays
-  # GPIO18 -> photorelay -> RJ45 pin 2 (Temp Up button line, Orange)
-  # GPIO19 -> photorelay -> RJ45 pin 8 (Temp Down button line, Brown)
+  # GPIO18 -> photorelay -> RJ45 pin 8 (Temp Down button line, Brown)
+  # GPIO19 -> photorelay -> RJ45 pin 2 (Temp Up button line, Orange)
   # Omit these two lines for read-only mode (no physical button control).
-  temp_up_pin: GPIO18
-  temp_down_pin: GPIO19
+  temp_up_pin: GPIO19
+  temp_down_pin: GPIO18
   # Timing (defaults shown — adjust after real-hardware testing)
   # press_duration_ms: 200
   # inter_press_delay_ms: 300

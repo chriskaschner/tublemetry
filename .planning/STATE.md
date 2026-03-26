@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: phase_complete
-stopped_at: "Completed 01-03-PLAN.md -- Phase 1 fully complete (3/3 plans)"
-last_updated: "2026-03-14T02:37:05Z"
-last_activity: 2026-03-14 -- Completed 01-03 (gap closure: requirement fixes, YAML tests, ladder capture script, 77 tests pass)
+status: in_progress
+stopped_at: "Full button injection hardware validated. Full re-home sequence + TOU automation next."
+last_updated: "2026-03-26T14:30:00Z"
+last_activity: 2026-03-26 -- Hardware validated end-to-end (display reading + button injection both directions), pin swap fixed, 0x34 lookup added, test buttons in HA, 203 tests passing
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 3
   completed_plans: 3
-  percent: 50
+  percent: 75
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** The tub automatically lowers its setpoint during on-peak hours and raises it before evening use -- no human involvement required.
-**Current focus:** Phase 1: RS-485 Display Reading
+**Current focus:** Hardware fully validated. Next: full re-home sequence test, then TOU automation in HA.
 
 ## Current Position
 
-Phase: 1 of 2 (RS-485 Display Reading) -- COMPLETE
-Plan: 3 of 3 in current phase -- ALL PLANS COMPLETE
-Status: Phase 1 fully complete (3/3 plans) -- ready for Phase 2 (Button Injection) or hardware testing
-Last activity: 2026-03-14 -- Completed 01-03 (gap closure: requirement fixes, YAML tests, ladder capture script, 77 tests pass)
+Phase: 1 of 2 (Button Injection MVP) -- hardware validated, full sequence + HA automation remain
+Plan: 3 of 3 in current phase -- ALL PLANS COMPLETE (hardware validation done ad-hoc this session)
+Status: Display reading live, button injection confirmed both directions, test buttons in HA diagnostic section.
+Last activity: 2026-03-26 -- Pin swap fixed (GPIO18=down, GPIO19=up), 0x34="1" added, test buttons validated, 203 tests pass
 
-Progress: [██████████] 100%
+Progress: [███████░░░] 75%
 
 ## Performance Metrics
 
@@ -45,52 +45,37 @@ Progress: [██████████] 100%
 |-------|-------|-------|----------|
 | 01 | 3/3 | 14min | 5min |
 
-**Recent Trend:**
-- Last 5 plans: 01-01 (4min), 01-02 (5min), 01-03 (5min)
-- Trend: Consistent ~5min/plan
-
 *Updated after each plan completion*
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- [Roadmap revision]: Reversed phase order -- display reading first (Phase 1), button injection second (Phase 2). Reading the display is independently valuable (temp monitoring in HA) and makes Phase 2 closed-loop from day one.
-- [Roadmap revision]: DISP-03 (drift correction) moved to Phase 2 because it requires both reading AND writing.
-- [Roadmap revision]: ENRG-01 (energy tracking) stays in Phase 2 because it benefits from both paths.
-- [Roadmap]: Temperature ladder capture folded into Phase 1 as prerequisite task (resolves 72-solution 7-segment encoding ambiguity).
-- [01-01]: GS510SZ reference encoding used as base lookup table -- 0x30="1" and 0x70="7" confirmed, remaining entries unverified until ladder capture.
-- [01-01]: Dp bit (bit 7) masked before lookup -- values with/without decimal point decode to same character.
+- [Roadmap revision]: Reversed phase order -- display reading first, button injection second.
+- [01-01]: 0x73="9" on VS300FL4 (NOT 0x7B as GS510SZ -- no bottom segment d).
+- [01-01]: Dp bit (bit 7) masked before lookup.
 - [01-01]: Dumb decoder principle: DisplayState reports display content faithfully, zero business logic on firmware side.
-- [01-01]: Temperature outside 80-120F accepted but flagged as low confidence rather than rejected.
-- [01-02]: TubtronDisplay stores two UARTComponent pointers (not inherited) for dual UART access.
-- [01-02]: TubtronClimate is a separate class from TubtronDisplay; parent holds climate pointer.
-- [01-02]: Frame boundary detection uses millis() gap > 1ms (not micros()).
-- [01-02]: SEVEN_SEG_TABLE formatted with markers for cross-check test parseability.
-- [01-02]: Pin 6 data read and discarded to prevent UART buffer overflow.
-- [01-02]: ESPHome compile verified successfully after fixing deprecated APIs (CLIMATE_SCHEMA, ClimateTraits, platform/board block).
-- [01-02]: Timestamp sensor uses millis() uptime instead of SNTP RealTimeClock (simpler, no external dependency).
-- [01-02]: climate.climate_schema(TubtronClimate) replaces deprecated climate.CLIMATE_SCHEMA.
-- [01-02]: Top-level esp32: block with framework: type: arduino replaces deprecated platform/board in esphome: block.
-- [01-03]: DISP-01/DISP-02 requirement statuses corrected from Complete to In Progress (hardware verification still pending).
-- [01-03]: Ladder capture uses byte index 3 for tens digit; ones digit derived from temperature % 10 in generate_lookup_update().
-- [01-03]: pytest pythonpath config added to pyproject.toml for importing 485/scripts modules in tests.
+- [01-02]: Frame boundary detection uses micros() gap > 500us. Min pulse 10us for noise rejection.
+- [01-02]: ESPHome compile verified -- deprecated APIs fixed (CLIMATE_SCHEMA, ClimateTraits, platform/board).
+- [01-02]: Timestamp sensor uses millis() uptime.
+- [Hardware validation 2026-03-26]: GPIO18=temp_down, GPIO19=temp_up (swapped from original wiring assumption -- confirmed via test press).
+- [Hardware validation 2026-03-26]: 0x34="1" in setpoint display mode (Balboa briefly shows setpoint after button press using different segment pattern for "1").
+- [Hardware validation 2026-03-26]: Partial frames dropped silently (unknown bytes -> LOGV, early return if any '?' digit).
+- [Hardware validation 2026-03-26]: Confidence sensor publish-on-change only (last_confidence_ tracking added).
+- [Hardware validation 2026-03-26]: TEST_PRESS phase added for single raw press (bypasses re-home, for hardware debug).
+- [Hardware validation 2026-03-26]: Restart/SafeMode buttons moved to entity_category=diagnostic in HA.
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-- Parts on AliExpress (2-4 week lead time). Temperature ladder capture and display decoding firmware can begin now with existing MAX485 boards.
-- Temperature ladder capture (physical tub access + RS-485 adapter) is the critical first task in Phase 1 -- unblocks all display decoding work.
-- RJ45 splitter interference and loose cable ends observed during initial testing -- photorelay isolation should resolve in Phase 2, but must verify.
+- Setpoint display frames decoded as current temp (Balboa shows setpoint ~1s after button press -- no way to distinguish from raw 7-seg data). Not blocking for TOU automation.
+- ISR can flood WiFi if clock pin gets noise -- pulldowns help. Serial flash required if OTA fails.
 
 ## Session Continuity
 
-Last session: 2026-03-14T02:37:05Z
-Stopped at: Completed 01-03-PLAN.md -- Phase 1 fully complete (3/3 plans)
-Resume file: .planning/phases/01-button-injection-mvp/01-03-SUMMARY.md
+Last session: 2026-03-26T14:30:00Z
+Stopped at: Hardware validated, saving context before /clear
+Resume file: .planning/phases/01-button-injection-mvp/.continue-here.md

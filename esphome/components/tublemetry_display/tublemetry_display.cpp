@@ -24,6 +24,7 @@ static const char *const TAG = "tublemetry_display";
 static const SegEntry SEVEN_SEG_TABLE[] = {
     {0x7E, '0'},  // confirmed (ladder capture 2026-03-20)
     {0x30, '1'},  // confirmed (ladder capture 2026-03-20)
+    {0x34, '1'},  // confirmed (setpoint display mode — "1" with lower-left foot segment e)
     {0x6D, '2'},  // confirmed (ladder capture 2026-03-20)
     {0x79, '3'},  // confirmed (ladder capture 2026-03-20)
     {0x33, '4'},  // confirmed (ladder capture 2026-03-20)
@@ -124,7 +125,7 @@ char TublemetryDisplay::decode_7seg_(uint8_t byte_val) {
     }
   }
 
-  ESP_LOGW(TAG, "Unknown 7-segment byte: 0x%02X (masked: 0x%02X)", byte_val, segments);
+  ESP_LOGV(TAG, "Unknown 7-segment byte: 0x%02X (masked: 0x%02X)", byte_val, segments);
   return '?';
 }
 
@@ -171,14 +172,16 @@ void TublemetryDisplay::loop() {
     this->injector_->loop();
   }
 
-  // Check if ISR has a new frame ready
-  if (!this->isr_data_.frame_ready) {
+  // Copy frame from ISR with interrupts disabled to prevent torn reads
+  portDISABLE_INTERRUPTS();
+  bool has_frame = this->isr_data_.frame_ready;
+  uint32_t frame_bits = this->isr_data_.last_frame;
+  if (has_frame) this->isr_data_.frame_ready = false;
+  portENABLE_INTERRUPTS();
+
+  if (!has_frame) {
     return;
   }
-
-  // Copy frame data and clear flag (minimize time with shared state)
-  uint32_t frame_bits = this->isr_data_.last_frame;
-  this->isr_data_.frame_ready = false;
 
   this->process_frame_(frame_bits);
 }
@@ -228,6 +231,12 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
   }
   float confidence = (static_cast<float>(known_count) / DIGITS_PER_FRAME) * 100.0f;
 
+  // Drop partial frames — transitional display states are not actionable
+  if (known_count < DIGITS_PER_FRAME) {
+    ESP_LOGD(TAG, "Partial frame dropped (raw: %s, confidence: %.0f%%)", raw_hex.c_str(), confidence);
+    return;
+  }
+
   // Only publish on change
   bool changed = false;
 
@@ -258,7 +267,8 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
     changed = true;
   }
 
-  if (this->decode_confidence_sensor_ != nullptr) {
+  if (this->decode_confidence_sensor_ != nullptr && confidence != this->last_confidence_) {
+    this->last_confidence_ = confidence;
     this->decode_confidence_sensor_->publish_state(confidence);
   }
 
@@ -310,8 +320,9 @@ void TublemetryDisplay::update_temperature_(const std::string &display_str) {
     std::string state = "temperature";
 
     if (temp < TEMP_MIN || temp > TEMP_MAX) {
-      ESP_LOGW(TAG, "Temperature %.0f outside expected range %.0f-%.0f",
+      ESP_LOGW(TAG, "Temperature %.0f outside expected range %.0f-%.0f — ignoring",
                temp, TEMP_MIN, TEMP_MAX);
+      return;
     }
 
     if (temp != this->last_temperature_ || std::isnan(this->last_temperature_)) {

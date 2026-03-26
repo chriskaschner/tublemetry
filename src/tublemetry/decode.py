@@ -44,6 +44,7 @@ _CONFIRMED_KEYS = frozenset([
 SEVEN_SEG_TABLE: dict[int, str] = {
     0x7E: "0",
     0x30: "1",
+    0x34: "1",  # setpoint display mode — "1" with lower-left foot (segment e)
     0x6D: "2",
     0x79: "3",
     0x33: "4",

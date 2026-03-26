@@ -61,6 +61,10 @@ class TublemetryDisplay : public Component {
   void set_digit_values_sensor(text_sensor::TextSensor *s) { this->digit_values_sensor_ = s; }
   void set_last_update_sensor(text_sensor::TextSensor *s) { this->last_update_sensor_ = s; }
 
+  // Test helpers — single raw button press for hardware validation
+  void test_press_up() { if (this->injector_ != nullptr) this->injector_->press_once(true); }
+  void test_press_down() { if (this->injector_ != nullptr) this->injector_->press_once(false); }
+
   // ISR handler (must be public for static trampoline)
   void IRAM_ATTR clock_isr_();
 
@@ -83,6 +87,7 @@ class TublemetryDisplay : public Component {
 
   // State tracking (publish only on change)
   float last_temperature_{NAN};
+  float last_confidence_{-1.0f};
   std::string last_display_string_;
   std::string last_display_state_;
   std::string last_raw_hex_;

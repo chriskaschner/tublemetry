@@ -16,6 +16,7 @@ enum class InjectorPhase : uint8_t {
   ADJUSTING,      // Pressing temp_up to reach target
   VERIFYING,      // Waiting for display stream to confirm setpoint
   COOLDOWN,       // Brief pause after sequence before accepting new requests
+  TEST_PRESS,     // Single raw press for hardware testing (bypasses re-home)
 };
 
 /// Result of the last completed sequence.
@@ -64,6 +65,9 @@ class ButtonInjector {
   /// (out of range, sequence in progress, no pins configured).
   bool request_temperature(float target);
 
+  /// Fire a single raw button press for hardware validation. Only works when IDLE.
+  void press_once(bool temp_up);
+
   /// Drive the state machine. Call every loop() iteration.
   void loop();
 
@@ -110,6 +114,7 @@ class ButtonInjector {
   uint8_t presses_remaining_{0};
   uint8_t presses_total_{0};
   bool pin_active_{false};         // true = relay is currently closed (button pressed)
+  bool test_press_up_{false};      // direction for TEST_PRESS phase
   uint32_t phase_start_ms_{0};     // millis() when current phase began
   uint32_t last_action_ms_{0};     // millis() of last pin state change
   float last_verified_temp_{NAN};  // last temperature fed from display during verify
@@ -128,6 +133,7 @@ class ButtonInjector {
   void loop_adjusting_();
   void loop_verifying_();
   void loop_cooldown_();
+  void loop_test_press_();
   void press_pin_(GPIOPin *pin);
   void release_pin_(GPIOPin *pin);
   void release_all_pins_();

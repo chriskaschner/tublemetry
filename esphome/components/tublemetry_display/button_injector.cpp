@@ -13,12 +13,13 @@ static const char *const TAG = "button_injector";
 
 const char *ButtonInjector::phase_to_string(InjectorPhase phase) {
   switch (phase) {
-    case InjectorPhase::IDLE:      return "idle";
-    case InjectorPhase::REHOMING:  return "rehoming";
-    case InjectorPhase::ADJUSTING: return "adjusting";
-    case InjectorPhase::VERIFYING: return "verifying";
-    case InjectorPhase::COOLDOWN:  return "cooldown";
-    default:                       return "unknown";
+    case InjectorPhase::IDLE:       return "idle";
+    case InjectorPhase::REHOMING:   return "rehoming";
+    case InjectorPhase::ADJUSTING:  return "adjusting";
+    case InjectorPhase::VERIFYING:  return "verifying";
+    case InjectorPhase::COOLDOWN:   return "cooldown";
+    case InjectorPhase::TEST_PRESS: return "test_press";
+    default:                        return "unknown";
   }
 }
 
@@ -95,6 +96,23 @@ bool ButtonInjector::request_temperature(float target) {
   return true;
 }
 
+// --- Single test press ---
+
+void ButtonInjector::press_once(bool temp_up) {
+  if (!this->is_configured()) {
+    ESP_LOGW(TAG, "Cannot test press — pins not configured");
+    return;
+  }
+  if (this->is_busy()) {
+    ESP_LOGW(TAG, "Cannot test press — sequence in progress (phase: %s)",
+             phase_to_string(this->phase_));
+    return;
+  }
+  this->test_press_up_ = temp_up;
+  ESP_LOGI(TAG, "Test press: %s", temp_up ? "temp_up" : "temp_down");
+  this->transition_to_(InjectorPhase::TEST_PRESS);
+}
+
 // --- Main loop ---
 
 void ButtonInjector::loop() {
@@ -112,6 +130,9 @@ void ButtonInjector::loop() {
       break;
     case InjectorPhase::COOLDOWN:
       this->loop_cooldown_();
+      break;
+    case InjectorPhase::TEST_PRESS:
+      this->loop_test_press_();
       break;
   }
 }
@@ -220,6 +241,27 @@ void ButtonInjector::loop_cooldown_() {
   if (elapsed >= this->cooldown_ms_) {
     ESP_LOGD(TAG, "Cooldown complete — ready for next sequence");
     this->transition_to_(InjectorPhase::IDLE);
+  }
+}
+
+void ButtonInjector::loop_test_press_() {
+  uint32_t now = millis();
+  uint32_t elapsed = now - this->last_action_ms_;
+  GPIOPin *pin = this->test_press_up_ ? this->temp_up_pin_ : this->temp_down_pin_;
+
+  if (this->pin_active_) {
+    if (elapsed >= this->press_duration_ms_) {
+      this->release_pin_(pin);
+      this->pin_active_ = false;
+      ESP_LOGI(TAG, "Test press complete (%s)", this->test_press_up_ ? "up" : "down");
+      this->transition_to_(InjectorPhase::COOLDOWN);
+    }
+  } else {
+    if (elapsed >= this->inter_press_delay_ms_) {
+      this->press_pin_(pin);
+      this->pin_active_ = true;
+      this->last_action_ms_ = now;
+    }
   }
 }
 
