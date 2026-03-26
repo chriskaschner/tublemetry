@@ -1,10 +1,11 @@
 """Tests for button injection logic.
 
-Tests the re-home algorithm calculations, safety clamps, state machine
-transitions, timing defaults, and YAML configuration for button injection.
+Tests the probe+cache algorithm, direct-delta calculations, safety clamps,
+state machine transitions, timing defaults, and YAML configuration.
 
-These tests mirror the C++ ButtonInjector logic in Python, same pattern
-as test_mock_frames.py mirrors the display decode pipeline.
+Strategy:
+  - First call (setpoint unknown): PROBING (1 down press) -> read display -> ADJUSTING
+  - Subsequent calls (setpoint known): direct delta -> ADJUSTING, no probe
 """
 
 import math
@@ -13,11 +14,10 @@ import yaml
 from pathlib import Path
 
 
-# --- Re-home algorithm (pure math, mirroring C++ logic) ---
+# --- Direct-delta algorithm (mirrors C++ logic) ---
 
 TEMP_FLOOR = 80.0
 TEMP_CEILING = 104.0
-REHOME_PRESSES = 25
 
 # Default timing (ms)
 DEFAULT_PRESS_DURATION_MS = 200
@@ -26,40 +26,34 @@ DEFAULT_VERIFY_TIMEOUT_MS = 10000
 DEFAULT_COOLDOWN_MS = 1000
 
 
-def calculate_rehome_sequence(target: float) -> dict:
-    """Calculate the button press sequence for a given target temperature.
+def calculate_direct_sequence(from_setpoint: float, target: float) -> dict:
+    """Calculate the direct-delta button press sequence.
 
     Returns dict with:
         valid: bool — whether the target is in range
-        down_presses: int — number of temp_down presses (always REHOME_PRESSES)
-        up_presses: int — number of temp_up presses to reach target from floor
-        total_presses: int — total button presses
-        estimated_duration_ms: int — estimated time for the full sequence
+        direction: str — "up", "down", or "none"
+        presses: int — number of presses needed
+        estimated_duration_ms: int — estimated time for the sequence
     """
-    # NaN check before rounding
-    if math.isnan(target):
-        return {"valid": False, "down_presses": 0, "up_presses": 0,
-                "total_presses": 0, "estimated_duration_ms": 0}
+    if math.isnan(target) or math.isnan(from_setpoint):
+        return {"valid": False, "direction": "none", "presses": 0, "estimated_duration_ms": 0}
 
     target = round(target)
 
     if target < TEMP_FLOOR or target > TEMP_CEILING:
-        return {"valid": False, "down_presses": 0, "up_presses": 0,
-                "total_presses": 0, "estimated_duration_ms": 0}
+        return {"valid": False, "direction": "none", "presses": 0, "estimated_duration_ms": 0}
 
-    down_presses = REHOME_PRESSES
-    up_presses = int(target - TEMP_FLOOR)
-    total_presses = down_presses + up_presses
+    delta = int(target - round(from_setpoint))
+    presses = abs(delta)
+    direction = "up" if delta > 0 else ("down" if delta < 0 else "none")
 
-    # Each press = press_duration + inter_press_delay
     press_cycle_ms = DEFAULT_PRESS_DURATION_MS + DEFAULT_INTER_PRESS_DELAY_MS
-    estimated_duration_ms = total_presses * press_cycle_ms
+    estimated_duration_ms = presses * press_cycle_ms
 
     return {
         "valid": True,
-        "down_presses": down_presses,
-        "up_presses": up_presses,
-        "total_presses": total_presses,
+        "direction": direction,
+        "presses": presses,
         "estimated_duration_ms": estimated_duration_ms,
     }
 
@@ -68,7 +62,7 @@ def calculate_rehome_sequence(target: float) -> dict:
 
 class InjectorPhase:
     IDLE = "idle"
-    REHOMING = "rehoming"
+    PROBING = "probing"
     ADJUSTING = "adjusting"
     VERIFYING = "verifying"
     COOLDOWN = "cooldown"
@@ -84,25 +78,29 @@ class InjectorResult:
 class SimulatedInjector:
     """Python simulation of the C++ ButtonInjector state machine.
 
-    Doesn't simulate real-time — just tracks state transitions and press counts.
+    Mirrors the probe+cache strategy:
+      - known_setpoint = None means first-boot (probe required)
+      - known_setpoint = float means cached from last success (direct delta)
     """
 
     def __init__(self):
         self.phase = InjectorPhase.IDLE
         self.target_temp = 0.0
-        self.down_presses_done = 0
-        self.up_presses_done = 0
-        self.down_presses_needed = 0
-        self.up_presses_needed = 0
+        self.known_setpoint = None   # None = unknown; float = cached
+        self.presses_done = 0
+        self.presses_needed = 0
+        self.adjusting_up = True
         self.last_result = InjectorResult.NONE
         self.sequence_count = 0
         self.configured = True
-        self.transitions = []  # record phase transitions
+        self.transitions = []
 
     def request_temperature(self, target: float) -> bool:
         if not self.configured:
             return False
         if self.phase != InjectorPhase.IDLE:
+            return False
+        if math.isnan(target):
             return False
         if target < TEMP_FLOOR or target > TEMP_CEILING:
             return False
@@ -110,24 +108,32 @@ class SimulatedInjector:
         target = round(target)
         self.target_temp = target
         self.sequence_count += 1
-        self.down_presses_needed = REHOME_PRESSES
-        self.up_presses_needed = int(target - TEMP_FLOOR)
-        self.down_presses_done = 0
-        self.up_presses_done = 0
-        self._transition(InjectorPhase.REHOMING)
+
+        if self.known_setpoint is not None:
+            self._start_adjusting(self.known_setpoint)
+        else:
+            self._transition(InjectorPhase.PROBING)
         return True
 
-    def run_to_verify(self):
-        """Fast-forward through rehoming and adjusting to reach verifying."""
-        if self.phase == InjectorPhase.REHOMING:
-            self.down_presses_done = self.down_presses_needed
-            if self.up_presses_needed == 0:
-                self._transition(InjectorPhase.VERIFYING)
-            else:
-                self._transition(InjectorPhase.ADJUSTING)
+    def complete_probe(self, probed_setpoint: float):
+        """Simulate probe press completing and display reading captured."""
+        assert self.phase == InjectorPhase.PROBING
+        self._start_adjusting(probed_setpoint)
 
+    def _start_adjusting(self, from_setpoint: float):
+        delta = int(round(self.target_temp) - round(from_setpoint))
+        if delta == 0:
+            self._transition(InjectorPhase.VERIFYING)
+            return
+        self.adjusting_up = delta > 0
+        self.presses_needed = abs(delta)
+        self.presses_done = 0
+        self._transition(InjectorPhase.ADJUSTING)
+
+    def run_to_verify(self):
+        """Fast-forward through adjusting to reach verifying."""
         if self.phase == InjectorPhase.ADJUSTING:
-            self.up_presses_done = self.up_presses_needed
+            self.presses_done = self.presses_needed
             self._transition(InjectorPhase.VERIFYING)
 
     def feed_temperature(self, temp: float):
@@ -135,6 +141,7 @@ class SimulatedInjector:
         if self.phase == InjectorPhase.VERIFYING:
             if temp == self.target_temp:
                 self.last_result = InjectorResult.SUCCESS
+                self.known_setpoint = self.target_temp
                 self._transition(InjectorPhase.COOLDOWN)
 
     def timeout(self):
@@ -164,88 +171,91 @@ class SimulatedInjector:
 # =============================================================================
 
 
-class TestRehomeAlgorithm:
-    """Test the re-home press calculation."""
+class TestDirectDeltaAlgorithm:
+    """Test the direct-delta press calculation."""
 
-    def test_target_95(self):
-        seq = calculate_rehome_sequence(95)
+    def test_up_delta(self):
+        seq = calculate_direct_sequence(95, 100)
         assert seq["valid"] is True
-        assert seq["down_presses"] == 25
-        assert seq["up_presses"] == 15
-        assert seq["total_presses"] == 40
+        assert seq["direction"] == "up"
+        assert seq["presses"] == 5
 
-    def test_target_80_floor(self):
-        """Target at floor: 25 down, 0 up."""
-        seq = calculate_rehome_sequence(80)
+    def test_down_delta(self):
+        seq = calculate_direct_sequence(100, 95)
         assert seq["valid"] is True
-        assert seq["down_presses"] == 25
-        assert seq["up_presses"] == 0
-        assert seq["total_presses"] == 25
+        assert seq["direction"] == "down"
+        assert seq["presses"] == 5
 
-    def test_target_104_ceiling(self):
-        """Target at ceiling: 25 down, 24 up."""
-        seq = calculate_rehome_sequence(104)
+    def test_no_delta(self):
+        seq = calculate_direct_sequence(95, 95)
         assert seq["valid"] is True
-        assert seq["down_presses"] == 25
-        assert seq["up_presses"] == 24
-        assert seq["total_presses"] == 49
+        assert seq["direction"] == "none"
+        assert seq["presses"] == 0
 
     def test_target_below_floor_rejected(self):
-        seq = calculate_rehome_sequence(79)
+        seq = calculate_direct_sequence(95, 79)
         assert seq["valid"] is False
 
     def test_target_above_ceiling_rejected(self):
-        seq = calculate_rehome_sequence(105)
+        seq = calculate_direct_sequence(95, 105)
         assert seq["valid"] is False
 
-    def test_target_way_below_rejected(self):
-        seq = calculate_rehome_sequence(0)
+    def test_floor_boundary_valid(self):
+        seq = calculate_direct_sequence(95, 80)
+        assert seq["valid"] is True
+        assert seq["direction"] == "down"
+        assert seq["presses"] == 15
+
+    def test_ceiling_boundary_valid(self):
+        seq = calculate_direct_sequence(95, 104)
+        assert seq["valid"] is True
+        assert seq["direction"] == "up"
+        assert seq["presses"] == 9
+
+    def test_rounding(self):
+        """Target 95.4 rounds to 95, 95.6 rounds to 96."""
+        seq_low = calculate_direct_sequence(90, 95.4)
+        assert seq_low["presses"] == 5  # round(95.4) = 95
+
+        seq_high = calculate_direct_sequence(90, 95.6)
+        assert seq_high["presses"] == 6  # round(95.6) = 96
+
+    def test_nan_target_rejected(self):
+        seq = calculate_direct_sequence(95, float("nan"))
         assert seq["valid"] is False
 
-    def test_target_way_above_rejected(self):
-        seq = calculate_rehome_sequence(200)
+    def test_nan_from_rejected(self):
+        seq = calculate_direct_sequence(float("nan"), 95)
         assert seq["valid"] is False
-
-    def test_target_rounding(self):
-        """Target 95.4 rounds to 95, target 95.6 rounds to 96."""
-        seq_low = calculate_rehome_sequence(95.4)
-        assert seq_low["up_presses"] == 15  # round(95.4) = 95, 95 - 80 = 15
-
-        seq_high = calculate_rehome_sequence(95.6)
-        assert seq_high["up_presses"] == 16  # round(95.6) = 96, 96 - 80 = 16
 
     def test_estimated_duration(self):
-        """Duration for target 95: 40 presses × 500ms = 20000ms."""
-        seq = calculate_rehome_sequence(95)
-        expected = 40 * (DEFAULT_PRESS_DURATION_MS + DEFAULT_INTER_PRESS_DELAY_MS)
-        assert seq["estimated_duration_ms"] == expected
+        """5 presses × 500ms = 2500ms."""
+        seq = calculate_direct_sequence(95, 100)
+        assert seq["estimated_duration_ms"] == 5 * 500
 
     @pytest.mark.parametrize("target", range(80, 105))
     def test_all_valid_targets(self, target):
-        """Every integer from 80-104 is a valid target."""
-        seq = calculate_rehome_sequence(target)
+        seq = calculate_direct_sequence(80, target)
         assert seq["valid"] is True
-        assert seq["up_presses"] == target - 80
-        assert seq["down_presses"] == 25
+        assert seq["presses"] == target - 80
 
 
 class TestSafetyClamps:
     """Test temperature range enforcement."""
 
     def test_floor_boundary(self):
-        assert calculate_rehome_sequence(80)["valid"] is True
-        assert calculate_rehome_sequence(79)["valid"] is False
+        assert calculate_direct_sequence(90, 80)["valid"] is True
+        assert calculate_direct_sequence(90, 79)["valid"] is False
 
     def test_ceiling_boundary(self):
-        assert calculate_rehome_sequence(104)["valid"] is True
-        assert calculate_rehome_sequence(105)["valid"] is False
+        assert calculate_direct_sequence(90, 104)["valid"] is True
+        assert calculate_direct_sequence(90, 105)["valid"] is False
 
     def test_negative_temperature(self):
-        assert calculate_rehome_sequence(-10)["valid"] is False
+        assert calculate_direct_sequence(90, -10)["valid"] is False
 
     def test_nan_temperature(self):
-        seq = calculate_rehome_sequence(float("nan"))
-        assert seq["valid"] is False
+        assert calculate_direct_sequence(90, float("nan"))["valid"] is False
 
 
 class TestStateMachine:
@@ -255,59 +265,126 @@ class TestStateMachine:
         inj = SimulatedInjector()
         assert inj.phase == InjectorPhase.IDLE
 
-    def test_request_starts_rehoming(self):
+    def test_first_request_goes_to_probing(self):
+        """Unknown setpoint → probe first."""
         inj = SimulatedInjector()
         assert inj.request_temperature(95) is True
-        assert inj.phase == InjectorPhase.REHOMING
+        assert inj.phase == InjectorPhase.PROBING
 
-    def test_full_sequence_to_success(self):
+    def test_known_setpoint_skips_probe(self):
+        """Known setpoint → direct to adjusting."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        assert inj.request_temperature(100) is True
+        assert inj.phase == InjectorPhase.ADJUSTING
+
+    def test_same_target_as_known_skips_adjusting(self):
+        """Known setpoint == target → skip straight to verifying."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(95)
+        assert inj.phase == InjectorPhase.VERIFYING
+
+    def test_probe_then_adjust_up(self):
+        """First request: probe reveals 95, target is 100 → 5 up presses."""
+        inj = SimulatedInjector()
+        inj.request_temperature(100)
+        assert inj.phase == InjectorPhase.PROBING
+        # Probe down press reveals setpoint - 1 = 94; we read 94 as probed setpoint
+        inj.complete_probe(94)
+        assert inj.phase == InjectorPhase.ADJUSTING
+        assert inj.presses_needed == 6  # 100 - 94 = 6
+        assert inj.adjusting_up is True
+
+    def test_probe_then_adjust_down(self):
+        """Probe reveals 100, target is 95 → 5 down presses."""
         inj = SimulatedInjector()
         inj.request_temperature(95)
+        inj.complete_probe(100)
+        assert inj.phase == InjectorPhase.ADJUSTING
+        assert inj.presses_needed == 5
+        assert inj.adjusting_up is False
+
+    def test_full_sequence_unknown_setpoint(self):
+        inj = SimulatedInjector()
+        inj.request_temperature(100)
+        inj.complete_probe(98)
         inj.run_to_verify()
         assert inj.phase == InjectorPhase.VERIFYING
-        inj.feed_temperature(95)
+        inj.feed_temperature(100)
         assert inj.phase == InjectorPhase.COOLDOWN
         assert inj.last_result == InjectorResult.SUCCESS
         inj.finish_cooldown()
         assert inj.phase == InjectorPhase.IDLE
 
-    def test_full_transitions_recorded(self):
+    def test_success_caches_setpoint(self):
+        """After success, known_setpoint is updated to target."""
         inj = SimulatedInjector()
-        inj.request_temperature(95)
+        inj.request_temperature(100)
+        inj.complete_probe(98)
         inj.run_to_verify()
-        inj.feed_temperature(95)
+        inj.feed_temperature(100)
+        assert inj.known_setpoint == 100
+
+    def test_second_call_uses_cache(self):
+        """Second request skips probe and uses exact delta."""
+        inj = SimulatedInjector()
+        # First sequence
+        inj.request_temperature(100)
+        inj.complete_probe(98)
+        inj.run_to_verify()
+        inj.feed_temperature(100)
+        inj.finish_cooldown()
+        # Second sequence — known setpoint = 100, target = 97 → 3 down presses
+        inj.request_temperature(97)
+        assert inj.phase == InjectorPhase.ADJUSTING
+        assert inj.presses_needed == 3
+        assert inj.adjusting_up is False
+
+    def test_full_transitions_unknown_setpoint(self):
+        inj = SimulatedInjector()
+        inj.request_temperature(100)
+        inj.complete_probe(98)
+        inj.run_to_verify()
+        inj.feed_temperature(100)
         inj.finish_cooldown()
 
         expected = [
-            (InjectorPhase.IDLE, InjectorPhase.REHOMING),
-            (InjectorPhase.REHOMING, InjectorPhase.ADJUSTING),
+            (InjectorPhase.IDLE, InjectorPhase.PROBING),
+            (InjectorPhase.PROBING, InjectorPhase.ADJUSTING),
             (InjectorPhase.ADJUSTING, InjectorPhase.VERIFYING),
             (InjectorPhase.VERIFYING, InjectorPhase.COOLDOWN),
             (InjectorPhase.COOLDOWN, InjectorPhase.IDLE),
         ]
         assert inj.transitions == expected
 
-    def test_floor_target_skips_adjusting(self):
-        """Target 80 (floor) should skip the adjusting phase."""
+    def test_full_transitions_known_setpoint(self):
         inj = SimulatedInjector()
-        inj.request_temperature(80)
+        inj.known_setpoint = 100.0
+        inj.request_temperature(97)
         inj.run_to_verify()
-        assert inj.phase == InjectorPhase.VERIFYING
+        inj.feed_temperature(97)
+        inj.finish_cooldown()
 
-        # Should have gone IDLE→REHOMING→VERIFYING (no ADJUSTING)
-        phases = [t[1] for t in inj.transitions]
-        assert InjectorPhase.ADJUSTING not in phases
+        expected = [
+            (InjectorPhase.IDLE, InjectorPhase.ADJUSTING),
+            (InjectorPhase.ADJUSTING, InjectorPhase.VERIFYING),
+            (InjectorPhase.VERIFYING, InjectorPhase.COOLDOWN),
+            (InjectorPhase.COOLDOWN, InjectorPhase.IDLE),
+        ]
+        assert inj.transitions == expected
 
     def test_concurrent_rejection(self):
         """Second request while busy should be rejected."""
         inj = SimulatedInjector()
         assert inj.request_temperature(95) is True
         assert inj.request_temperature(100) is False
-        assert inj.target_temp == 95  # original target unchanged
+        assert inj.target_temp == 95
 
     def test_request_after_completion(self):
         """After a sequence completes, a new request should be accepted."""
         inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
         inj.request_temperature(95)
         inj.run_to_verify()
         inj.feed_temperature(95)
@@ -319,24 +396,35 @@ class TestStateMachine:
 
     def test_timeout_result(self):
         inj = SimulatedInjector()
-        inj.request_temperature(95)
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
         inj.run_to_verify()
         inj.timeout()
         assert inj.last_result == InjectorResult.TIMEOUT
         assert inj.phase == InjectorPhase.COOLDOWN
 
-    def test_abort_during_rehoming(self):
+    def test_timeout_does_not_cache_setpoint(self):
+        """Timeout should not update known_setpoint."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.known_setpoint == 95.0  # unchanged
+
+    def test_abort_during_probing(self):
         inj = SimulatedInjector()
         inj.request_temperature(95)
-        assert inj.phase == InjectorPhase.REHOMING
+        assert inj.phase == InjectorPhase.PROBING
         inj.abort()
         assert inj.last_result == InjectorResult.ABORTED
         assert inj.phase == InjectorPhase.COOLDOWN
 
-    def test_abort_during_verifying(self):
+    def test_abort_during_adjusting(self):
         inj = SimulatedInjector()
-        inj.request_temperature(95)
-        inj.run_to_verify()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        assert inj.phase == InjectorPhase.ADJUSTING
         inj.abort()
         assert inj.last_result == InjectorResult.ABORTED
 
@@ -347,12 +435,12 @@ class TestStateMachine:
         assert inj.last_result == InjectorResult.NONE
 
     def test_wrong_temperature_doesnt_verify(self):
-        """Feeding the wrong temperature during verify should not complete."""
         inj = SimulatedInjector()
-        inj.request_temperature(95)
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
         inj.run_to_verify()
-        inj.feed_temperature(94)
-        assert inj.phase == InjectorPhase.VERIFYING  # still waiting
+        inj.feed_temperature(99)
+        assert inj.phase == InjectorPhase.VERIFYING
 
     def test_unconfigured_rejects_request(self):
         inj = SimulatedInjector()
@@ -385,17 +473,17 @@ class TestTimingDefaults:
         """One press cycle = 500ms (200ms press + 300ms gap)."""
         assert DEFAULT_PRESS_DURATION_MS + DEFAULT_INTER_PRESS_DELAY_MS == 500
 
-    def test_worst_case_sequence_duration(self):
-        """Target 104: 49 presses × 500ms = 24.5 seconds (before verify)."""
-        seq = calculate_rehome_sequence(104)
-        assert seq["estimated_duration_ms"] == 49 * 500
-        assert seq["estimated_duration_ms"] == 24500
+    def test_tou_typical_sequence_duration(self):
+        """TOU 4-degree shift: 4 presses × 500ms = 2000ms (vs 24500ms rehome)."""
+        seq = calculate_direct_sequence(102, 98)
+        assert seq["estimated_duration_ms"] == 4 * 500
+        assert seq["estimated_duration_ms"] == 2000
 
-    def test_best_case_sequence_duration(self):
-        """Target 80: 25 presses × 500ms = 12.5 seconds (before verify)."""
-        seq = calculate_rehome_sequence(80)
-        assert seq["estimated_duration_ms"] == 25 * 500
-        assert seq["estimated_duration_ms"] == 12500
+    def test_worst_case_sequence_duration(self):
+        """80 -> 104: 24 presses × 500ms = 12000ms."""
+        seq = calculate_direct_sequence(80, 104)
+        assert seq["estimated_duration_ms"] == 24 * 500
+        assert seq["estimated_duration_ms"] == 12000
 
 
 class TestYamlButtonConfig:
@@ -425,7 +513,6 @@ class TestYamlButtonConfig:
 
     def test_pins_are_different(self, yaml_config):
         display = yaml_config["tublemetry_display"]
-        # Pins might be bare strings or dicts with 'number' key
         up = display["temp_up_pin"]
         down = display["temp_down_pin"]
         up_num = up if isinstance(up, str) else up.get("number", up)

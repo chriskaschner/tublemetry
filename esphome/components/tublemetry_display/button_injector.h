@@ -12,11 +12,11 @@ namespace tublemetry_display {
 /// State machine phases for button injection sequence.
 enum class InjectorPhase : uint8_t {
   IDLE = 0,       // No sequence in progress
-  REHOMING,       // Pressing temp_down to reach floor (80F)
-  ADJUSTING,      // Pressing temp_up to reach target
+  PROBING,        // One down press to reveal current setpoint from display
+  ADJUSTING,      // Pressing up or down to reach target from known setpoint
   VERIFYING,      // Waiting for display stream to confirm setpoint
   COOLDOWN,       // Brief pause after sequence before accepting new requests
-  TEST_PRESS,     // Single raw press for hardware testing (bypasses re-home)
+  TEST_PRESS,     // Single raw press for hardware testing (bypasses sequence)
 };
 
 /// Result of the last completed sequence.
@@ -29,10 +29,11 @@ enum class InjectorResult : uint8_t {
 
 /// Non-blocking button injection via photorelay GPIO outputs.
 ///
-/// Implements the "re-home" strategy:
-///   1. Press temp_down 25 times to guarantee floor (80F)
-///   2. Press temp_up N times where N = (target - 80)
-///   3. Wait for display stream to confirm the setpoint
+/// Strategy:
+///   - If the current setpoint is known (cached from last success): calculate
+///     the exact delta and press up or down accordingly. No sweep.
+///   - If the setpoint is unknown (first boot or reset): press down once to
+///     reveal the setpoint on the display (PROBING), then adjust from there.
 ///
 /// All timing is non-blocking — call loop() from the parent component's loop.
 class ButtonInjector {
@@ -72,7 +73,7 @@ class ButtonInjector {
   void loop();
 
   /// Feed the current display temperature from the decode pipeline.
-  /// Used during VERIFYING phase to confirm the setpoint was reached.
+  /// Used during PROBING and VERIFYING to read the current setpoint.
   void feed_display_temperature(float temp);
 
   /// Abort any in-progress sequence and return to IDLE.
@@ -88,7 +89,6 @@ class ButtonInjector {
   // --- Constants ---
   static constexpr float TEMP_FLOOR = 80.0f;
   static constexpr float TEMP_CEILING = 104.0f;
-  static constexpr uint8_t REHOME_PRESSES = 25;
 
   // --- String helpers ---
   static const char *phase_to_string(InjectorPhase phase);
@@ -111,13 +111,16 @@ class ButtonInjector {
 
   // Sequence state
   float target_temp_{0.0f};
+  float known_setpoint_{NAN};      // cached setpoint after successful sequences; NAN = unknown
   uint8_t presses_remaining_{0};
   uint8_t presses_total_{0};
   bool pin_active_{false};         // true = relay is currently closed (button pressed)
+  bool adjusting_up_{true};        // direction for ADJUSTING phase
   bool test_press_up_{false};      // direction for TEST_PRESS phase
   uint32_t phase_start_ms_{0};     // millis() when current phase began
   uint32_t last_action_ms_{0};     // millis() of last pin state change
-  float last_verified_temp_{NAN};  // last temperature fed from display during verify
+  float last_display_temp_{NAN};   // last temperature fed from display stream
+  float probed_setpoint_{NAN};     // setpoint captured during PROBING phase
 
   // Diagnostics
   uint32_t sequence_count_{0};
@@ -129,7 +132,8 @@ class ButtonInjector {
 
   // Internal methods
   void transition_to_(InjectorPhase new_phase);
-  void loop_rehoming_();
+  void start_adjusting_(float from_setpoint);
+  void loop_probing_();
   void loop_adjusting_();
   void loop_verifying_();
   void loop_cooldown_();

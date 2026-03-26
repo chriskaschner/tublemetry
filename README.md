@@ -131,7 +131,7 @@ The stub cable is a standard T568B patch cable with one end cut, exposing Blue (
 
 A resistor voltage divider is required on the Clock and Data lines to shift from 5V to 3.3V for ESP32 GPIO input.
 
-## Button Injection (Phase 2 -- planned)
+## Button Injection
 
 The VL-series topside panel uses analog button lines -- each button connects +5V to its pin through a resistive network. Pressing a button raises the pin voltage from idle (~2.3V) to ~4.7V.
 
@@ -144,8 +144,6 @@ The VL-series topside panel uses analog button lines -- each button connects +5V
 | Lights | 3 | 2.27V | 4.71V | +2.44V |
 | Jets | 7 | 2.26V | 4.71V | +2.45V |
 
-Button simulation has been confirmed working by manually bridging +5V (Pin 1) to Pin 8 (Temp Down), which successfully lowered the temperature setpoint by 1F.
-
 ### Circuit Design
 
 ```
@@ -157,18 +155,24 @@ ESP32 GPIO ──> AQY212EH photorelay ──> Button pin
 - **AQY212EH** photorelays provide galvanic isolation between the ESP32 and the tub's sensitive analog button lines
 - When the ESP32 drives the relay LED, it closes the switch between +5V and the button pin, simulating a press
 - When idle, the relay is open (high-impedance) -- no interference with the panel
-- 4 channels needed: Temp Up (Pin 2), Temp Down (Pin 8), Lights (Pin 3), Jets (Pin 7)
 
 **Why photorelays?** The analog button lines are extremely sensitive to loading. An unterminated Cat5 breakout cable caused phantom Temp Up presses. Photorelays provide the high-impedance isolation needed to prevent interference when idle.
 
-### Re-Home Strategy
+### Wiring (button injection)
 
-To set a target temperature reliably without knowing the current setpoint:
+```
+ESP32 GPIO18 ──> AQY212EH ──> RJ45 Pin 8 (Brown)    -- Temp Down
+ESP32 GPIO19 ──> AQY212EH ──> RJ45 Pin 2 (Orange)   -- Temp Up
+```
 
-1. Press Temp Down 25 times (guarantees reaching the 80F floor regardless of starting point)
-2. Press Temp Up N times to reach the target temperature
+### Setpoint Strategy (probe + cache)
 
-This eliminates drift and synchronization issues. Combined with display reading (Phase 1), the system can verify the setpoint actually changed (closed-loop control).
+The firmware uses a two-phase strategy to set the target temperature without a full sweep:
+
+1. **First call** (setpoint unknown at boot): press Temp Down once to reveal the current setpoint on the display, read it, then press up or down the exact delta to the target.
+2. **Subsequent calls** (setpoint cached from last success): calculate the delta directly and press up or down without any probe. Typical TOU shift of 2-4°F = 2-4 presses total.
+
+The setpoint cache is invalidated on reboot, triggering a single probe press on the next request. The display reading after the probe press is used to determine the exact delta -- no blind sweeping to the floor.
 
 ## Installation
 
@@ -208,11 +212,13 @@ uv run python 485/scripts/ladder_sigrok.py
 
 - [x] Protocol reverse-engineered (synchronous clock+data, not RS-485)
 - [x] 7-segment lookup table fully confirmed (all digits 0-9, mode letters)
-- [x] Python decode library with 75 tests
+- [x] Python decode library with 212 tests
 - [x] ESPHome component (GPIO interrupt-driven)
-- [ ] Hardware validation (ESP32 reading live display)
-- [ ] Button injection for setpoint control (Phase 2)
-- [ ] TOU automation in Home Assistant (Phase 2)
+- [x] Hardware validated -- ESP32 reading live display at 60Hz
+- [x] Button injection via AQY212EH photorelays -- both directions confirmed
+- [x] Closed-loop setpoint control -- probe+cache strategy, display-verified
+- [x] Home Assistant climate entity -- interactive thermostat card
+- [ ] TOU automation in Home Assistant
 
 ## Related Projects
 

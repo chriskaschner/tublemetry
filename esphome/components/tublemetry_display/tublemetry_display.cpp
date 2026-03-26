@@ -327,7 +327,8 @@ void TublemetryDisplay::update_temperature_(const std::string &display_str) {
 
     if (temp != this->last_temperature_ || std::isnan(this->last_temperature_)) {
       this->last_temperature_ = temp;
-      this->climate_->current_temperature = temp;
+      // HA climate API is Celsius-native; convert from Fahrenheit
+      this->climate_->current_temperature = (temp - 32.0f) * 5.0f / 9.0f;
       this->climate_->publish_state();
       ESP_LOGI(TAG, "Temperature: %.0f F", temp);
     }
@@ -393,23 +394,30 @@ float TublemetryClimate::get_setup_priority() const {
 climate::ClimateTraits TublemetryClimate::traits() {
   auto traits = climate::ClimateTraits();
   traits.add_supported_mode(climate::CLIMATE_MODE_HEAT);
-  traits.set_visual_min_temperature(80.0f);
-  traits.set_visual_max_temperature(104.0f);
-  traits.set_visual_temperature_step(1.0f);
+  traits.set_supports_current_temperature(true);
+  // HA climate API is Celsius-native. Range: 80-104F = 26.7-40.0C
+  traits.set_visual_min_temperature(26.7f);
+  traits.set_visual_max_temperature(40.0f);
+  traits.set_visual_temperature_step(5.0f / 9.0f);  // 1°F in Celsius
   return traits;
 }
 
 void TublemetryClimate::control(const climate::ClimateCall &call) {
   if (call.get_target_temperature().has_value()) {
-    float target = *call.get_target_temperature();
+    float target_c = *call.get_target_temperature();
 
-    // Publish the target immediately so HA UI reflects the request
-    this->target_temperature = target;
+    // Snap to nearest whole °F, then convert back to °C for HA
+    float target_f = roundf((target_c * 9.0f / 5.0f) + 32.0f);
+    float snapped_c = (target_f - 32.0f) * 5.0f / 9.0f;
+
+    // Publish the snapped target so HA UI reflects the actual setpoint
+    this->target_temperature = snapped_c;
     this->publish_state();
 
     if (this->injector_ != nullptr && this->injector_->is_configured()) {
-      if (!this->injector_->request_temperature(target)) {
-        ESP_LOGW(TAG, "Button injection rejected target %.0fF", target);
+      ESP_LOGI(TAG, "Target: %.1f°C = %.0f°F", target_c, target_f);
+      if (!this->injector_->request_temperature(target_f)) {
+        ESP_LOGW(TAG, "Button injection rejected target %.0fF", target_f);
       }
     } else {
       ESP_LOGW(TAG, "No button injector configured — target set in HA only (no physical control)");

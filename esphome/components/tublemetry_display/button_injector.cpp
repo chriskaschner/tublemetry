@@ -14,7 +14,7 @@ static const char *const TAG = "button_injector";
 const char *ButtonInjector::phase_to_string(InjectorPhase phase) {
   switch (phase) {
     case InjectorPhase::IDLE:       return "idle";
-    case InjectorPhase::REHOMING:   return "rehoming";
+    case InjectorPhase::PROBING:    return "probing";
     case InjectorPhase::ADJUSTING:  return "adjusting";
     case InjectorPhase::VERIFYING:  return "verifying";
     case InjectorPhase::COOLDOWN:   return "cooldown";
@@ -77,21 +77,23 @@ bool ButtonInjector::request_temperature(float target) {
     return false;
   }
 
-  // Round to nearest integer (tub only supports whole degrees)
   target = roundf(target);
-
   this->target_temp_ = target;
   this->sequence_count_++;
 
-  uint8_t up_presses = static_cast<uint8_t>(target - TEMP_FLOOR);
-  ESP_LOGI(TAG, "Starting sequence #%lu: target %.0fF — %d down + %d up presses",
-           (unsigned long) this->sequence_count_, target,
-           (int) REHOME_PRESSES, (int) up_presses);
-
-  // Begin rehoming phase
-  this->presses_remaining_ = REHOME_PRESSES;
-  this->presses_total_ = REHOME_PRESSES;
-  this->transition_to_(InjectorPhase::REHOMING);
+  if (!std::isnan(this->known_setpoint_)) {
+    // Setpoint is known — go directly to adjusting (no probe needed)
+    ESP_LOGI(TAG, "Starting sequence #%lu: %.0fF -> %.0fF (known setpoint)",
+             (unsigned long) this->sequence_count_,
+             this->known_setpoint_, target);
+    this->start_adjusting_(this->known_setpoint_);
+  } else {
+    // Setpoint unknown — probe with one down press to discover it
+    ESP_LOGI(TAG, "Starting sequence #%lu: target %.0fF — probing setpoint",
+             (unsigned long) this->sequence_count_, target);
+    this->probed_setpoint_ = NAN;
+    this->transition_to_(InjectorPhase::PROBING);
+  }
 
   return true;
 }
@@ -113,14 +115,37 @@ void ButtonInjector::press_once(bool temp_up) {
   this->transition_to_(InjectorPhase::TEST_PRESS);
 }
 
+// --- start_adjusting_ helper ---
+
+void ButtonInjector::start_adjusting_(float from_setpoint) {
+  int delta = static_cast<int>(roundf(this->target_temp_)) - static_cast<int>(roundf(from_setpoint));
+
+  if (delta == 0) {
+    // Already at target — skip straight to verify
+    ESP_LOGI(TAG, "Already at %.0fF — skipping adjust, verifying", this->target_temp_);
+    this->transition_to_(InjectorPhase::VERIFYING);
+    return;
+  }
+
+  this->adjusting_up_ = (delta > 0);
+  this->presses_remaining_ = static_cast<uint8_t>(std::abs(delta));
+  this->presses_total_ = this->presses_remaining_;
+
+  ESP_LOGI(TAG, "Adjusting: %d %s-presses from %.0fF to %.0fF",
+           (int) this->presses_total_,
+           this->adjusting_up_ ? "up" : "down",
+           from_setpoint, this->target_temp_);
+  this->transition_to_(InjectorPhase::ADJUSTING);
+}
+
 // --- Main loop ---
 
 void ButtonInjector::loop() {
   switch (this->phase_) {
     case InjectorPhase::IDLE:
-      return;  // Nothing to do
-    case InjectorPhase::REHOMING:
-      this->loop_rehoming_();
+      return;
+    case InjectorPhase::PROBING:
+      this->loop_probing_();
       break;
     case InjectorPhase::ADJUSTING:
       this->loop_adjusting_();
@@ -139,43 +164,43 @@ void ButtonInjector::loop() {
 
 // --- Phase loops ---
 
-void ButtonInjector::loop_rehoming_() {
+void ButtonInjector::loop_probing_() {
   uint32_t now = millis();
   uint32_t elapsed = now - this->last_action_ms_;
 
   if (this->pin_active_) {
-    // Pin is pressed — wait for press duration then release
+    // Press is active — wait for press duration then release
     if (elapsed >= this->press_duration_ms_) {
       this->release_pin_(this->temp_down_pin_);
       this->pin_active_ = false;
       this->last_action_ms_ = now;
-      this->presses_remaining_--;
-
-      uint8_t completed = this->presses_total_ - this->presses_remaining_;
-      ESP_LOGD(TAG, "Rehome press %d/%d complete", (int) completed, (int) this->presses_total_);
-
-      if (this->presses_remaining_ == 0) {
-        // Rehoming done — move to adjusting
-        uint8_t up_presses = static_cast<uint8_t>(this->target_temp_ - TEMP_FLOOR);
-        if (up_presses == 0) {
-          // Target is floor — skip adjusting, go straight to verify
-          ESP_LOGI(TAG, "Target is floor (%.0fF) — skipping adjust phase", TEMP_FLOOR);
-          this->transition_to_(InjectorPhase::VERIFYING);
-        } else {
-          this->presses_remaining_ = up_presses;
-          this->presses_total_ = up_presses;
-          ESP_LOGI(TAG, "Rehome complete — adjusting: %d up-presses to %.0fF",
-                   (int) up_presses, this->target_temp_);
-          this->transition_to_(InjectorPhase::ADJUSTING);
-        }
-      }
     }
-  } else {
-    // Pin is released — wait for inter-press delay then press again
-    if (elapsed >= this->inter_press_delay_ms_) {
+  } else if (std::isnan(this->probed_setpoint_)) {
+    if (elapsed < this->inter_press_delay_ms_) {
+      // Still waiting after release for display to update
+      return;
+    }
+
+    // Time to fire the probe press or read the result
+    if (this->phase_start_ms_ == this->last_action_ms_) {
+      // Haven't pressed yet — fire the probe down press
       this->press_pin_(this->temp_down_pin_);
       this->pin_active_ = true;
       this->last_action_ms_ = now;
+    } else {
+      // Press has been released and we've waited — read the display
+      if (!std::isnan(this->last_display_temp_)) {
+        // Display shows the new setpoint (old - 1) after our down press
+        this->probed_setpoint_ = this->last_display_temp_;
+        ESP_LOGI(TAG, "Probed setpoint: %.0fF (display after down press)", this->probed_setpoint_);
+        this->start_adjusting_(this->probed_setpoint_);
+      } else {
+        // No display reading yet — keep waiting (verify timeout will catch runaway)
+        uint32_t total_elapsed = now - this->phase_start_ms_;
+        if (total_elapsed >= this->verify_timeout_ms_) {
+          this->finish_sequence_(InjectorResult::TIMEOUT, "probe: no display reading");
+        }
+      }
     }
   }
 }
@@ -183,28 +208,28 @@ void ButtonInjector::loop_rehoming_() {
 void ButtonInjector::loop_adjusting_() {
   uint32_t now = millis();
   uint32_t elapsed = now - this->last_action_ms_;
+  GPIOPin *pin = this->adjusting_up_ ? this->temp_up_pin_ : this->temp_down_pin_;
 
   if (this->pin_active_) {
-    // Pin is pressed — wait for press duration then release
     if (elapsed >= this->press_duration_ms_) {
-      this->release_pin_(this->temp_up_pin_);
+      this->release_pin_(pin);
       this->pin_active_ = false;
       this->last_action_ms_ = now;
       this->presses_remaining_--;
 
       uint8_t completed = this->presses_total_ - this->presses_remaining_;
-      ESP_LOGD(TAG, "Adjust press %d/%d complete", (int) completed, (int) this->presses_total_);
+      ESP_LOGD(TAG, "Adjust press %d/%d complete (%s)",
+               (int) completed, (int) this->presses_total_,
+               this->adjusting_up_ ? "up" : "down");
 
       if (this->presses_remaining_ == 0) {
-        // Adjusting done — move to verify
         ESP_LOGI(TAG, "Adjust complete — verifying display shows %.0fF", this->target_temp_);
         this->transition_to_(InjectorPhase::VERIFYING);
       }
     }
   } else {
-    // Pin is released — wait for inter-press delay then press again
     if (elapsed >= this->inter_press_delay_ms_) {
-      this->press_pin_(this->temp_up_pin_);
+      this->press_pin_(pin);
       this->pin_active_ = true;
       this->last_action_ms_ = now;
     }
@@ -215,22 +240,19 @@ void ButtonInjector::loop_verifying_() {
   uint32_t now = millis();
   uint32_t elapsed = now - this->phase_start_ms_;
 
-  // Check if display has confirmed our target
-  if (!std::isnan(this->last_verified_temp_) &&
-      this->last_verified_temp_ == this->target_temp_) {
+  if (!std::isnan(this->last_display_temp_) &&
+      this->last_display_temp_ == this->target_temp_) {
     ESP_LOGI(TAG, "Verified: display shows %.0fF — sequence successful", this->target_temp_);
     this->finish_sequence_(InjectorResult::SUCCESS);
     return;
   }
 
-  // Check timeout
   if (elapsed >= this->verify_timeout_ms_) {
     ESP_LOGW(TAG, "Verification timeout after %dms — display shows %.0fF, expected %.0fF",
              (int) elapsed,
-             std::isnan(this->last_verified_temp_) ? -1.0f : this->last_verified_temp_,
+             std::isnan(this->last_display_temp_) ? -1.0f : this->last_display_temp_,
              this->target_temp_);
     this->finish_sequence_(InjectorResult::TIMEOUT, "verification timeout");
-    return;
   }
 }
 
@@ -268,7 +290,7 @@ void ButtonInjector::loop_test_press_() {
 // --- Feed display temperature ---
 
 void ButtonInjector::feed_display_temperature(float temp) {
-  this->last_verified_temp_ = temp;
+  this->last_display_temp_ = temp;
 }
 
 // --- Abort ---
@@ -331,6 +353,8 @@ void ButtonInjector::finish_sequence_(InjectorResult result, const std::string &
 
   if (result == InjectorResult::SUCCESS) {
     this->success_count_++;
+    // Cache the confirmed setpoint for direct-delta on next call
+    this->known_setpoint_ = this->target_temp_;
   }
 
   ESP_LOGI(TAG, "Sequence #%lu finished: %s (total: %lu success, %lu total)",
@@ -343,7 +367,6 @@ void ButtonInjector::finish_sequence_(InjectorResult result, const std::string &
     ESP_LOGW(TAG, "Last error: %s", error.c_str());
   }
 
-  // Enter cooldown before accepting new requests
   this->transition_to_(InjectorPhase::COOLDOWN);
 }
 

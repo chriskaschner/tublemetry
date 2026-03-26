@@ -14,9 +14,9 @@ The tub automatically lowers its setpoint during on-peak hours and raises it bef
 
 - Confirmed RJ45 pinout: +5V (pin 1), GND (pin 4), analog button lines (pins 2/3/7/8), RS-485 data (pins 5/6)
 - Confirmed button simulation works: bridging +5V to button pin changes setpoint
-- Confirmed RS-485 protocol: 115200 baud 8N1, synchronous clock+data (not BWA framed)
-- Confirmed idle frame structure: `FE 06 70 XX 00 06 70 00` with temperature-dependent byte
-- Identified 72 candidate 7-segment mappings (needs more data points to resolve)
+- Confirmed synchronous clock+data protocol (NOT RS-485 UART): Pin 6=clock, Pin 5=data, 24 bits/frame at 60Hz
+- Full 7-segment lookup table confirmed via ladder capture (2026-03-20): all digits 0-9, mode letters E/c/L/t/H
+- VS300FL4 uses 0x73 for "9" (no bottom segment), differs from GS510SZ reference (0x7B)
 
 ### Active
 
@@ -24,8 +24,8 @@ The tub automatically lowers its setpoint during on-peak hours and raises it bef
 - [ ] ESPHome firmware exposes climate entity to Home Assistant
 - [ ] "Re-home" strategy: slam 25x to floor (80F), count up to target
 - [ ] Home Assistant TOU automation: 99F on-peak (10am-9pm weekdays), 104F off-peak
-- [ ] RS-485 display stream decoding for closed-loop temperature verification
-- [ ] Temperature ladder capture to resolve 7-segment encoding ambiguity
+- [ ] Display stream decoding for closed-loop temperature verification (ESPHome firmware needs GPIO rewrite)
+- [x] Temperature ladder capture to resolve 7-segment encoding ambiguity (completed 2026-03-20)
 - [ ] Published protocol documentation and ESPHome component for community
 
 ### Out of Scope
@@ -63,6 +63,8 @@ The tub automatically lowers its setpoint during on-peak hours and raises it bef
 | ESPHome over custom firmware | Native Home Assistant integration, OTA updates, YAML config, large community | -- Pending |
 | Open-loop first, closed-loop later | Button injection is proven and sufficient for TOU; display decoding is complex and can wait | -- Pending |
 | AQY212EH specifically | DIP-4 package fits breadboard, 60V/500mA rating adequate, 0.2 ohm on-resistance acceptable for analog line | -- Pending |
+| 0x73 for "9" (not GS510SZ 0x7B) | VS300FL4 draws "9" without bottom segment; confirmed via ladder capture walking setpoint 95-90 | Confirmed 2026-03-20 |
+| Interrupt-driven GPIO over UART for ESPHome | Protocol is synchronous clock+data, not async UART; UART approach produces garbage | Decided, not yet implemented |
 
 ---
 *Last updated: 2026-03-13 after initialization*

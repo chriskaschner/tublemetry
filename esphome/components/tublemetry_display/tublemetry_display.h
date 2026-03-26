@@ -112,7 +112,11 @@ class TublemetryDisplay : public Component {
 /// Climate entity backed by TublemetryDisplay with optional button injection.
 class TublemetryClimate : public climate::Climate, public Component {
  public:
-  void setup() override {}
+  void setup() override {
+    this->mode = climate::CLIMATE_MODE_HEAT;
+    // Default target 100°F expressed in Celsius so HA card is interactive before first setpoint is set
+    this->target_temperature = (100.0f - 32.0f) * 5.0f / 9.0f;
+  }
   float get_setup_priority() const override;
 
   void set_button_injector(ButtonInjector *injector) { this->injector_ = injector; }
