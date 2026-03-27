@@ -144,16 +144,22 @@ class SimulatedInjector:
                 self.known_setpoint = self.target_temp
                 self._transition(InjectorPhase.COOLDOWN)
 
+    def press_once(self):
+        """Simulate a raw test press. Invalidates cached setpoint."""
+        self.known_setpoint = None  # real setpoint changed — probe on next request
+
     def timeout(self):
         """Simulate verification timeout."""
         if self.phase == InjectorPhase.VERIFYING:
             self.last_result = InjectorResult.TIMEOUT
+            self.known_setpoint = None  # don't know where setpoint landed — probe next time
             self._transition(InjectorPhase.COOLDOWN)
 
     def abort(self):
         """Abort the current sequence."""
         if self.phase != InjectorPhase.IDLE:
             self.last_result = InjectorResult.ABORTED
+            self.known_setpoint = None  # don't know where setpoint landed — probe next time
             self._transition(InjectorPhase.COOLDOWN)
 
     def finish_cooldown(self):
@@ -404,13 +410,13 @@ class TestStateMachine:
         assert inj.phase == InjectorPhase.COOLDOWN
 
     def test_timeout_does_not_cache_setpoint(self):
-        """Timeout should not update known_setpoint."""
+        """Timeout clears known_setpoint — setpoint location is uncertain after failed sequence."""
         inj = SimulatedInjector()
         inj.known_setpoint = 95.0
         inj.request_temperature(100)
         inj.run_to_verify()
         inj.timeout()
-        assert inj.known_setpoint == 95.0  # unchanged
+        assert inj.known_setpoint is None  # cleared: must probe on next request
 
     def test_abort_during_probing(self):
         inj = SimulatedInjector()
@@ -484,6 +490,62 @@ class TestTimingDefaults:
         seq = calculate_direct_sequence(80, 104)
         assert seq["estimated_duration_ms"] == 24 * 500
         assert seq["estimated_duration_ms"] == 12000
+
+
+class TestSetpointInvalidation:
+    """known_setpoint must be cleared whenever the real setpoint may have drifted."""
+
+    def test_press_once_invalidates_known_setpoint(self):
+        """Test press changes the real setpoint — next request must probe."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 102.0
+        inj.press_once()
+        assert inj.known_setpoint is None
+
+    def test_next_sequence_after_press_once_probes(self):
+        """After a test press, the next request goes to PROBING not ADJUSTING."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 102.0
+        inj.press_once()
+        inj.request_temperature(104.0)
+        assert inj.phase == InjectorPhase.PROBING
+
+    def test_timeout_invalidates_known_setpoint(self):
+        """Verification timeout means we don't know where the setpoint landed."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 102.0
+        inj.request_temperature(104.0)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.known_setpoint is None
+
+    def test_next_sequence_after_timeout_probes(self):
+        """After a timeout, the next request probes instead of using stale cache."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 102.0
+        inj.request_temperature(104.0)
+        inj.run_to_verify()
+        inj.timeout()
+        inj.finish_cooldown()
+        inj.request_temperature(104.0)
+        assert inj.phase == InjectorPhase.PROBING
+
+    def test_abort_invalidates_known_setpoint(self):
+        """Aborted sequence means we don't know where the setpoint landed."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 102.0
+        inj.request_temperature(104.0)
+        inj.abort()
+        assert inj.known_setpoint is None
+
+    def test_success_still_caches_setpoint(self):
+        """Success must still cache the confirmed setpoint (regression guard)."""
+        inj = SimulatedInjector()
+        inj.request_temperature(100.0)
+        inj.complete_probe(98.0)
+        inj.run_to_verify()
+        inj.feed_temperature(100.0)
+        assert inj.known_setpoint == 100.0
 
 
 class TestYamlButtonConfig:

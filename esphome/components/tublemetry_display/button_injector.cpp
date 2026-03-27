@@ -111,7 +111,8 @@ void ButtonInjector::press_once(bool temp_up) {
     return;
   }
   this->test_press_up_ = temp_up;
-  ESP_LOGI(TAG, "Test press: %s", temp_up ? "temp_up" : "temp_down");
+  this->known_setpoint_ = NAN;  // test press changes real setpoint — probe on next sequence
+  ESP_LOGI(TAG, "Test press: %s (setpoint cache cleared)", temp_up ? "temp_up" : "temp_down");
   this->transition_to_(InjectorPhase::TEST_PRESS);
 }
 
@@ -355,6 +356,9 @@ void ButtonInjector::finish_sequence_(InjectorResult result, const std::string &
     this->success_count_++;
     // Cache the confirmed setpoint for direct-delta on next call
     this->known_setpoint_ = this->target_temp_;
+  } else {
+    // Timeout or abort: setpoint location is uncertain — force probe on next sequence
+    this->known_setpoint_ = NAN;
   }
 
   ESP_LOGI(TAG, "Sequence #%lu finished: %s (total: %lu success, %lu total)",
