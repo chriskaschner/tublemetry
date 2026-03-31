@@ -1,0 +1,102 @@
+alias: Hot Tub TOU Schedule
+description: >
+  Rg-2A TOU setpoint control. Weekday schedule tracks on/off-peak windows.
+  Weekend holds 104F all day, coasts at 10pm.
+mode: single
+trigger:
+  - platform: time
+    at: "04:30:00"
+    id: wd_preheat
+  - platform: time
+    at: "05:00:00"
+    id: we_preheat
+  - platform: time
+    at: "10:00:00"
+    id: wd_onpeak
+  - platform: time
+    at: "17:30:00"
+    id: wd_eve_preheat
+  - platform: time
+    at: "19:00:00"
+    id: wd_eve_full
+  - platform: time
+    at: "22:00:00"
+    id: coast
+condition: []
+action:
+  - choose:
+      # Weekday: pre-heat before morning off-peak window
+      - conditions:
+          - condition: trigger
+            id: wd_preheat
+          - condition: time
+            weekday: [mon, tue, wed, thu, fri]
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: climate.hot_tub
+            data:
+              temperature: 104
+
+      # Weekend: pre-heat to be at 104F by 6am
+      - conditions:
+          - condition: trigger
+            id: we_preheat
+          - condition: time
+            weekday: [sat, sun]
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: climate.hot_tub
+            data:
+              temperature: 104
+
+      # Weekday: on-peak starts, drop to floor
+      - conditions:
+          - condition: trigger
+            id: wd_onpeak
+          - condition: time
+            weekday: [mon, tue, wed, thu, fri]
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: climate.hot_tub
+            data:
+              temperature: 96
+
+      # Weekday: pre-heat for evening before on-peak ends at 7pm
+      - conditions:
+          - condition: trigger
+            id: wd_eve_preheat
+          - condition: time
+            weekday: [mon, tue, wed, thu, fri]
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: climate.hot_tub
+            data:
+              temperature: 102
+
+      # Weekday: evening off-peak, bring to full temp
+      - conditions:
+          - condition: trigger
+            id: wd_eve_full
+          - condition: time
+            weekday: [mon, tue, wed, thu, fri]
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: climate.hot_tub
+            data:
+              temperature: 104
+
+      # All days: coast for the night
+      - conditions:
+          - condition: trigger
+            id: coast
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: climate.hot_tub
+            data:
+              temperature: 98

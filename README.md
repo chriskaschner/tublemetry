@@ -56,8 +56,10 @@ This controller is common in rotomolded spas from Strong Spas, Lifesmart, AquaRe
 ## Hardware
 
 - **ESP32**: WROOM-32 (any dev board)
-- **Connection**: RJ45 T-splitter at J1, tapping 3 wires (clock, data, ground)
-- **Level shifting**: Voltage divider required (5V signals to 3.3V ESP32 GPIO)
+- **Connection**: RJ45 T-splitter at J1
+- **Power**: Pin 1 (+5V) → ESP32 VIN with 540µF bulk capacitance (2x 220µF + 1x 100µF in parallel)
+- **Level shifting**: Voltage divider required on clock and data lines (5V → 3.3V)
+- **Button injection**: 2x AQY212EH photorelays (Temp Up on GPIO18, Temp Down on GPIO19)
 
 ## Protocol
 
@@ -184,8 +186,7 @@ The setpoint cache is invalidated on reboot, triggering a single probe press on 
    - Adjust `clock_pin` and `data_pin` GPIO numbers for your wiring
 3. Compile and flash:
    ```bash
-   esphome compile esphome/tublemetry.yaml
-   esphome upload esphome/tublemetry.yaml
+   uv run esphome run esphome/tublemetry.yaml
    ```
 4. The device will appear in Home Assistant with:
    - **Climate entity**: "Hot Tub" -- shows current water temperature
@@ -218,7 +219,8 @@ uv run python 485/scripts/ladder_sigrok.py
 - [x] Button injection via AQY212EH photorelays -- both directions confirmed
 - [x] Closed-loop setpoint control -- probe+cache strategy, display-verified
 - [x] Home Assistant climate entity -- interactive thermostat card
-- [ ] TOU automation in Home Assistant
+- [x] TOU automation in Home Assistant
+- [x] Heating rate tracker (time-to-setpoint vs outdoor temp logging)
 
 ## Related Projects
 

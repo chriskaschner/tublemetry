@@ -28,28 +28,45 @@
 
 ## RJ45 Pinout (Confirmed)
 
-| Pin | Color        | Function      | ESP32 Connection          |
-|-----|-------------|---------------|---------------------------|
-| 1   | Orange/White | **+5V Power** | Future: B0505S-1W input   |
-| 2   | Orange       | **Temp Up**   | → Photorelay A → GPIO18   |
-| 3   | Green/White  | Lights        | (not used)                |
-| 4   | Blue         | **Ground**    | → ESP32 GND               |
-| 5   | Blue/White   | **Data**      | → Voltage divider → GPIO17|
-| 6   | Green        | **Clock**     | → Voltage divider → GPIO16|
-| 7   | Brown/White  | Jets          | (not used)                |
-| 8   | Brown        | **Temp Down** | → Photorelay B → GPIO19   |
+| Pin | Color        | Function      | ESP32 Connection                    |
+|-----|-------------|---------------|--------------------------------------|
+| 1   | Orange/White | **+5V Power** | → ESP32 VIN + photorelay commons    |
+| 2   | Orange       | **Temp Up**   | → Photorelay A switch out → GPIO18  |
+| 3   | Green/White  | Lights        | (not used)                          |
+| 4   | Blue         | **Ground**    | → ESP32 GND                         |
+| 5   | Blue/White   | **Data**      | → Voltage divider → GPIO17          |
+| 6   | Green        | **Clock**     | → Voltage divider → GPIO16          |
+| 7   | Brown/White  | Jets          | (not used)                          |
+| 8   | Brown        | **Temp Down** | → Photorelay B switch out → GPIO19  |
 
 ## Wiring Sections
 
-### 1. Ground (do this first)
+### 1. Power — Direct from RJ45 Pin 1
 
 ```
-RJ45 Pin 4 (Blue) ──────── ESP32 GND
+RJ45 Pin 1 (+5V) ──┬─── ESP32 5V / VIN
+                   ├─── C1: 220µF (+ to rail)
+                   ├─── C2: 220µF (+ to rail)
+                   └─── C3: 100µF (+ to rail)
+RJ45 Pin 4 (GND) ──┴─── ESP32 GND
+                   (all cap - legs here)
 ```
 
-Common ground between the tub controller and ESP32. Required for all other connections.
+Total bulk capacitance: 540µF. Place all three caps as close to the ESP32 VIN/GND pins as possible. + legs to the +5V rail, - legs to GND.
 
-### 2. Display Reading — Voltage Dividers (5V → 3.3V)
+**Capacity check:**
+- ESP32 with WiFi LIGHT power save: ~30-50mA average
+- ESP32 WiFi TX spikes to ~500mA for ~2ms; 540µF covers the ~300mA deficit without drooping below 4.5V
+
+### 2. Ground
+
+```
+RJ45 Pin 4 (Blue) ──────── B0505S-1W Vin- (and ESP32 GND bus)
+```
+
+Pin 4 is the common ground reference for the entire circuit. It connects to B0505S-1W Vin- and to the ESP32 GND rail (which is also Vout-). One wire at the terminal block, then split.
+
+### 3. Display Reading — Voltage Dividers (5V → 3.3V)
 
 The clock and data signals from the controller are 5V logic. The ESP32 GPIO inputs are 3.3V tolerant but 5V will damage them. Two voltage dividers step the signals down.
 
@@ -60,7 +77,7 @@ Pin 6 (Clock) ──┤├──┬── GPIO16 (clock_pin)
                 20kΩ │
                  ┤├──┘
                  │
-                GND
+                GND (ESP32 GND = Pin 4)
 
 
                  10kΩ
@@ -69,7 +86,7 @@ Pin 5 (Data) ───┤├──┬── GPIO17 (data_pin)
                 20kΩ │
                  ┤├──┘
                  │
-                GND
+                GND (ESP32 GND = Pin 4)
 ```
 
 **Resistor values:** Any 1:2 ratio works. Options:
@@ -82,9 +99,10 @@ Pin 5 (Data) ───┤├──┬── GPIO17 (data_pin)
 
 **Important:** The ESP32 has internal pull-downs enabled on GPIO16 and GPIO17 (configured in YAML). This prevents noise when the display cable is not connected.
 
-### 3. Button Injection — Photorelays (AQY212EH)
+### 4. Button Injection — Photorelays (AQY212EH)
 
-Each photorelay acts as a normally-open switch between +5V and the button line. When the ESP32 drives the GPIO high, the internal LED turns on, the photorelay closes, and it's equivalent to pressing the physical button.
+Each photorelay acts as a normally-open switch between the B0505S-1W Vout+ rail and the button line. When the ESP32 drives the GPIO high, the internal LED turns on, the photorelay closes, and the voltage jump on the button line registers as a button press.
+
 
 **AQY212EH pinout (DIP-4):**
 ```
@@ -101,7 +119,7 @@ Each photorelay acts as a normally-open switch between +5V and the button line. 
 GPIO18 ──────────┤├──── Pin 1 (LED +)
                          Pin 2 (LED -) ──── GND
 
-                         Pin 3 ──── RJ45 Pin 1 (+5V, Orange/White)
+                         Pin 3 ──── RJ45 Pin 1 (+5V)
                          Pin 4 ──── RJ45 Pin 2 (Temp Up, Orange)
 ```
 
@@ -111,7 +129,7 @@ GPIO18 ──────────┤├──── Pin 1 (LED +)
 GPIO19 ──────────┤├──── Pin 1 (LED +)
                          Pin 2 (LED -) ──── GND
 
-                         Pin 3 ──── RJ45 Pin 1 (+5V, Orange/White)
+                         Pin 3 ──── RJ45 Pin 1 (+5V)
                          Pin 4 ──── RJ45 Pin 8 (Temp Down, Brown)
 ```
 
@@ -123,45 +141,35 @@ GPIO19 ──────────┤├──── Pin 1 (LED +)
 
 **How it simulates a button press:**
 - Idle: button line sits at ~2.3V (pulled by controller's ADC circuit)
-- Press: photorelay closes, connecting +5V to button line → voltage jumps to ~4.7V
+- Press: photorelay closes, connecting Vout+ (~5V) to button line → voltage jumps to ~4.7V
 - Controller's ADC reads the voltage spike as a button press
-
-### 4. Power (Initial Testing)
-
-For initial testing, power the ESP32 via USB from an extension cord to the nearest outlet. This keeps power isolated from the tub controller while you verify everything works.
-
-**Future (board-powered):**
-```
-                    B0505S-1W
-RJ45 Pin 1 (+5V) ──── Vin+ ──── Vout+ ──── ESP32 5V/VIN
-RJ45 Pin 4 (GND) ──── Vin- ──── Vout- ──── ESP32 GND
-```
-
-The B0505S-1W provides galvanic isolation between the tub's 5V rail and the ESP32. Don't do this until display reading and button injection are verified.
 
 ## ESP32 GPIO Summary
 
-| GPIO  | Direction | Function     | Connected To                   |
-|-------|-----------|-------------|--------------------------------|
-| GPIO16| Input     | Clock       | RJ45 Pin 6 via voltage divider |
-| GPIO17| Input     | Data        | RJ45 Pin 5 via voltage divider |
-| GPIO18| Output    | Temp Up     | Photorelay A LED (330Ω)        |
-| GPIO19| Output    | Temp Down   | Photorelay B LED (330Ω)        |
-| GND   | —         | Common GND  | RJ45 Pin 4                     |
+| GPIO  | Direction | Function     | Connected To                          |
+|-------|-----------|-------------|---------------------------------------|
+| GPIO16| Input     | Clock       | RJ45 Pin 6 via voltage divider        |
+| GPIO17| Input     | Data        | RJ45 Pin 5 via voltage divider        |
+| GPIO18| Output    | Temp Up     | Photorelay A LED (330Ω)               |
+| GPIO19| Output    | Temp Down   | Photorelay B LED (330Ω)               |
+| VIN   | Power in  | 5V supply   | RJ45 Pin 1 (+5V)                      |
+| GND   | —         | Common GND  | RJ45 Pin 4                            |
 
 ## Pre-Power Checklist
 
-Run through this BEFORE plugging in the ESP32:
+Run through this BEFORE connecting to the tub:
 
-- [ ] **GND connected:** RJ45 Pin 4 → ESP32 GND
-- [ ] **Voltage dividers built:** both dividers tested with multimeter — apply 5V input, measure 3.0-3.5V at output
+- [ ] **Power wired:** RJ45 Pin 1 (+5V) → ESP32 VIN, RJ45 Pin 4 (GND) → ESP32 GND
+- [ ] **Bulk caps installed:** 2x 220µF + 1x 100µF in parallel across VIN/GND, + legs to +5V rail
+- [ ] **Rail voltage:** measure ESP32 VIN to GND = 5V ± 0.25V with tub powered on
+- [ ] **Voltage dividers built:** both tested with multimeter — 5V input → 3.0–3.5V output
 - [ ] **Clock divider connected:** RJ45 Pin 6 → divider → GPIO16
 - [ ] **Data divider connected:** RJ45 Pin 5 → divider → GPIO17
-- [ ] **Photorelay A wired:** GPIO18 → 330Ω → LED+ (pin 1), LED- (pin 2) → GND, switch pin 3 → RJ45 Pin 1 (+5V), switch pin 4 → RJ45 Pin 2 (Temp Up)
-- [ ] **Photorelay B wired:** GPIO19 → 330Ω → LED+ (pin 1), LED- (pin 2) → GND, switch pin 3 → RJ45 Pin 1 (+5V), switch pin 4 → RJ45 Pin 8 (Temp Down)
-- [ ] **No shorts:** check continuity between +5V and GND (should be open)
-- [ ] **No crossed wires:** clock goes to GPIO16 (not 17), data goes to GPIO17 (not 16)
-- [ ] **Topside panel still works:** with just the T-splitter and terminal blocks connected (no ESP32), verify the panel displays normally
+- [ ] **Photorelay A wired:** GPIO18 → 330Ω → LED+ (pin 1), LED- (pin 2) → GND, switch pin 3 → Vout+, switch pin 4 → RJ45 Pin 2 (Temp Up)
+- [ ] **Photorelay B wired:** GPIO19 → 330Ω → LED+ (pin 1), LED- (pin 2) → GND, switch pin 3 → Vout+, switch pin 4 → RJ45 Pin 8 (Temp Down)
+- [ ] **No shorts:** continuity between Pin 1 and Pin 4 should be open
+- [ ] **No crossed wires:** clock → GPIO16 (not 17), data → GPIO17 (not 16)
+- [ ] **Topside panel still works:** with just the T-splitter and terminal blocks (no ESP32), panel displays normally
 
 ## Verification Steps (After Power-On)
 
@@ -203,10 +211,10 @@ Fill in as you wire — helps when debugging later:
 
 | Connection | Wire Color Used |
 |-----------|----------------|
-| GND (Pin 4 → ESP32) | _____________ |
+| GND (Pin 4 → GND bus) | _____________ |
 | Clock (Pin 6 → divider) | _____________ |
 | Data (Pin 5 → divider) | _____________ |
-| +5V (Pin 1 → photorelays) | _____________ |
+| +5V (Pin 1 → ESP32 VIN + relay commons) | _____________ |
 | Temp Up (Pin 2 → relay A) | _____________ |
 | Temp Down (Pin 8 → relay B) | _____________ |
 | GPIO16 → divider output | _____________ |
