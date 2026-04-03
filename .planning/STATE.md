@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in_progress
-stopped_at: "Full button injection hardware validated. Full re-home sequence + TOU automation next."
-last_updated: "2026-03-26T14:30:00Z"
-last_activity: 2026-03-26 -- Hardware validated end-to-end (display reading + button injection both directions), pin swap fixed, 0x34 lookup added, test buttons in HA, 203 tests passing
+status: executing
+stopped_at: Completed 02-01-PLAN.md — C++ + codegen layer complete
+last_updated: "2026-04-03T23:46:47.625Z"
+last_activity: 2026-04-03
 progress:
-  total_phases: 2
+  total_phases: 3
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 6
+  completed_plans: 4
   percent: 75
 ---
 
@@ -21,20 +21,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** The tub automatically lowers its setpoint during on-peak hours and raises it before evening use -- no human involvement required.
-**Current focus:** Hardware fully validated. Next: full re-home sequence test, then TOU automation in HA.
+**Current focus:** Phase 02 — Architecture Fix + HA Integration
 
 ## Current Position
 
-Phase: 1 of 2 (Button Injection MVP) -- hardware validated, full sequence + HA automation remain
-Plan: 3 of 3 in current phase -- ALL PLANS COMPLETE (hardware validation done ad-hoc this session)
-Status: Display reading live, button injection confirmed both directions, test buttons in HA diagnostic section.
-Last activity: 2026-03-26 -- Pin swap fixed (GPIO18=down, GPIO19=up), 0x34="1" added, test buttons validated, 203 tests pass
+Phase: 02 (Architecture Fix + HA Integration) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-04-03
 
 Progress: [███████░░░] 75%
 
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 3
 - Average duration: 5min
 - Total execution time: 14min
@@ -46,6 +47,7 @@ Progress: [███████░░░] 75%
 | 01 | 3/3 | 14min | 5min |
 
 *Updated after each plan completion*
+| Phase 02 P01 | 2min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -64,6 +66,12 @@ Progress: [███████░░░] 75%
 - [Hardware validation 2026-03-26]: Confidence sensor publish-on-change only (last_confidence_ tracking added).
 - [Hardware validation 2026-03-26]: TEST_PRESS phase added for single raw press (bypasses re-home, for hardware debug).
 - [Hardware validation 2026-03-26]: Restart/SafeMode buttons moved to entity_category=diagnostic in HA.
+- [2026-03-27]: press_once() must invalidate known_setpoint_ -- test presses change real setpoint without updating cache.
+- [2026-03-27]: timeout/abort also invalidate known_setpoint_ -- setpoint location uncertain after failed sequence.
+- [2026-03-27]: probe+cache over always-rehome -- user preference: delta presses only (e.g. 10 up for 94->104 vs 49 for re-home).
+- [Phase 02]: No device_class on temperature sensor — omitting device_class prevents HA unit conversion; unit_of_measurement='degF' is opaque label
+- [Phase 02]: number.py uses try/except around injector lookup — injector may not exist in read-only deployments
+- [Phase 02]: publish_state() called before request_temperature() in TublemetrySetpoint::control() — optimistic HA update
 
 ### Pending Todos
 
@@ -73,9 +81,10 @@ None.
 
 - Setpoint display frames decoded as current temp (Balboa shows setpoint ~1s after button press -- no way to distinguish from raw 7-seg data). Not blocking for TOU automation.
 - ISR can flood WiFi if clock pin gets noise -- pulldowns help. Serial flash required if OTA fails.
+- Verification will likely time out (setpoint flash brief and noisy) -- not blocking, setpoint still gets set.
 
 ## Session Continuity
 
-Last session: 2026-03-26T14:30:00Z
-Stopped at: Hardware validated, saving context before /clear
-Resume file: .planning/phases/01-button-injection-mvp/.continue-here.md
+Last session: 2026-04-03T23:46:47.622Z
+Stopped at: Completed 02-01-PLAN.md — C++ + codegen layer complete
+Resume file: None

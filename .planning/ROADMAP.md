@@ -40,10 +40,10 @@ Plans:
   3. TOU automation `ha/tou_automation.yaml` fires using °F values (104, 102, 98, 96) against the number entity
   4. Component version string is published to a text sensor in HA on boot
   5. `esphome compile tublemetry.yaml` succeeds with no climate component; all existing tests pass
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
-- [ ] 02-01-PLAN.md -- C++ + codegen layer: TublemetrySetpoint class, number.py, temperature sensor in sensor.py, AUTO_LOAD update, tublemetry_display.h/.cpp wiring
+- [x] 02-01-PLAN.md -- C++ + codegen layer: TublemetrySetpoint class, number.py, temperature sensor in sensor.py, AUTO_LOAD update, tublemetry_display.h/.cpp wiring
 - [ ] 02-02-PLAN.md -- YAML + HA config: add sensor/number entries to tublemetry.yaml, fix tou_automation.yaml with number entity and degF values
 - [ ] 02-03-PLAN.md -- Tests: extend test_esphome_yaml.py with sensor/number entity checks, create test_number_entity.py for range and TOU automation validation
 
@@ -65,5 +65,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. RS-485 Display Reading + Button Injection MVP | 3/3 | Complete | 2026-03-30 |
-| 2. Architecture Fix + HA Integration | 0/3 | Not started | - |
+| 2. Architecture Fix + HA Integration | 1/3 | In Progress|  |
 | 3. Community Contribution | 0/? | Not started | - |

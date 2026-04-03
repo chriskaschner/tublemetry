@@ -9,23 +9,23 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Button Injection
 
-- [ ] **BUTN-01**: User can set target temperature via HA climate entity
-- [ ] **BUTN-02**: ESP32 simulates Temp Up/Down button presses via photorelays with no phantom presses
-- [ ] **BUTN-03**: Re-home sequence slams 25x to floor (80F) then counts up to target temperature
-- [ ] **BUTN-04**: Firmware clamps temperature range to 80-104F (CPSC safety limit)
-- [ ] **BUTN-05**: No interference or phantom presses during button simulation (galvanic isolation, short leads, decoupling caps on analog lines)
+- [x] **BUTN-01**: User can set target temperature via HA number entity (80-104°F, no unit conversion)
+- [x] **BUTN-02**: ESP32 simulates Temp Up/Down button presses via photorelays with no phantom presses
+- [x] **BUTN-03**: Probe+cache sequence: probe finds current setpoint, counts delta presses to target (re-home sequence as fallback)
+- [x] **BUTN-04**: Firmware clamps temperature range to 80-104F (CPSC safety limit)
+- [x] **BUTN-05**: No interference or phantom presses during button simulation (galvanic isolation, short leads, decoupling caps on analog lines)
 
 ### Connectivity
 
-- [ ] **CONN-01**: ESP32 firmware supports OTA updates without physical access
-- [ ] **CONN-02**: WiFi auto-reconnects with fallback AP mode for recovery
-- [ ] **CONN-03**: All button commands and state changes are logged (ESPHome logger + HA state history)
+- [x] **CONN-01**: ESP32 firmware supports OTA updates without physical access
+- [x] **CONN-02**: WiFi auto-reconnects with fallback AP mode for recovery
+- [x] **CONN-03**: All button commands and state changes are logged (ESPHome logger + HA state history)
 
 ### Display Reading
 
-- [ ] **DISP-01**: ESP32 decodes RS-485 display stream to read current water temperature -- In Progress: firmware ready, hardware verification pending, lookup table unverified (17/20 entries)
-- [ ] **DISP-02**: Current temperature populates HA climate entity (full thermostat card with current + target) -- In Progress: climate entity defined, hardware integration pending
-- [ ] **DISP-03**: Drift detection compares display reading vs expected setpoint and auto-corrects on mismatch
+- [x] **DISP-01**: ESP32 decodes RS-485 display stream to read current water temperature (lookup table fully confirmed via ladder capture 2026-03-20)
+- [x] **DISP-02**: Current temperature populates a plain HA sensor entity (integer °F, no unit conversion -- climate entity removed due to forced F→C conversion bug)
+- [ ] **DISP-03**: Drift detection compares display reading vs expected setpoint and auto-corrects on mismatch (firmware logic exists; blocked on HA entity fix)
 
 ### Energy
 
@@ -47,7 +47,6 @@ Explicitly excluded. Documented to prevent scope creep.
 
 | Feature | Reason |
 |---------|--------|
-| TOU schedule automation | User handles directly in HA automations |
 | RS-485 command injection | No digital command channel exists on VS-series; panel is dumb analog |
 | PID control on ESP32 | Board has its own thermostat; dual control loop would fight itself |
 | Cloud connectivity | ESPHome native API is local-only, faster, and more reliable |
@@ -63,16 +62,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DISP-01 | Phase 1 | In Progress |
-| DISP-02 | Phase 1 | In Progress |
-| BUTN-01 | Phase 2 | Pending |
-| BUTN-02 | Phase 2 | Pending |
-| BUTN-03 | Phase 2 | Pending |
-| BUTN-04 | Phase 2 | Pending |
-| BUTN-05 | Phase 2 | Pending |
-| CONN-01 | Phase 2 | Pending |
-| CONN-02 | Phase 2 | Pending |
-| CONN-03 | Phase 2 | Pending |
+| DISP-01 | Phase 1 | Complete |
+| BUTN-02 | Phase 1 | Complete |
+| BUTN-03 | Phase 1 | Complete |
+| BUTN-04 | Phase 1 | Complete |
+| BUTN-05 | Phase 1 | Complete |
+| CONN-01 | Phase 1 | Complete |
+| CONN-02 | Phase 1 | Complete |
+| CONN-03 | Phase 1 | Complete |
+| BUTN-01 | Phase 2 | Complete |
+| DISP-02 | Phase 2 | Complete |
 | DISP-03 | Phase 2 | Pending |
 | ENRG-01 | Phase 2 | Pending |
 
@@ -83,4 +82,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-03-14 -- DISP-01/DISP-02 statuses revised per 01-VERIFICATION.md gap analysis (firmware ready, hardware verification pending)*
+*Last updated: 2026-04-03 -- Phase 1 complete (DISP-01, BUTN-02-05, CONN-01-03); BUTN-01/DISP-02 revised: climate entity removed, sensor+number replacement pending; BUTN-03 revised: probe+cache implemented (not re-home)*
