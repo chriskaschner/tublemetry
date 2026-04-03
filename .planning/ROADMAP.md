@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tubtron delivers hot tub TOU automation in two phases. Phase 1 builds the read path: an ESP32 decodes the RS-485 display stream to surface current water temperature in a HA climate entity -- this alone delivers temperature monitoring and validates the protocol. Phase 2 adds the write path: button injection via photorelays enables automated setpoint changes, and because the read path already exists, closed-loop verification, drift correction, and energy tracking work from day one. Reading the display unlocks everything; button injection on top of it is closed-loop from the start.
+Tubtron delivers hot tub TOU automation in three phases. Phase 1 built both the read path (RS-485 display decoding) and write path (button injection via photorelays) together — the two were developed as a single MVP. Phase 2 fixes the architecture: the ESPHome climate entity (which forces a broken F→C→F conversion chain) is replaced with a sensor + number entity pair, restoring HA temperature reporting and setpoint control. Phase 3 publishes the protocol findings and ESPHome component for the community.
 
 ## Phases
 
@@ -12,19 +12,17 @@ Tubtron delivers hot tub TOU automation in two phases. Phase 1 builds the read p
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: RS-485 Display Reading** - Temperature ladder capture, display stream decoding, current water temperature in HA climate entity
-- [ ] **Phase 2: Button Injection + Closed-Loop Control** - Photorelay button simulation, re-home sequence, drift correction, connectivity resilience, energy cost tracking
+- [x] **Phase 1: RS-485 Display Reading + Button Injection MVP** - Protocol reverse-engineering, display stream decoding, button injection via photorelays, probe+cache setpoint control, OTA/WiFi, TOU schedule in HA
+- [ ] **Phase 2: Architecture Fix + HA Integration** - Replace climate entity with sensor+number (fix F→C conversion bug), restore HA temperature reporting and setpoint control, fix TOU automation, add version reporting
+- [ ] **Phase 3: Community Contribution** - Publish protocol documentation and ESPHome component for VS-series hot tub community
 
 ## Phase Details
 
-### Phase 1: RS-485 Display Reading
-**Goal**: User can see current hot tub water temperature in Home Assistant -- read from the tub's display stream via RS-485, not guessed or assumed
-**Depends on**: Nothing (first phase); physical tub access + RS-485 adapter required for temperature ladder capture
-**Requirements**: DISP-01, DISP-02
-**Success Criteria** (what must be TRUE):
-  1. Temperature ladder captured at 5+ known temperatures, resolving the 72-solution 7-segment encoding ambiguity
-  2. ESP32 decodes the Pin 5 RS-485 display stream in real time and extracts the current water temperature
-  3. HA climate entity displays the current water temperature (read-only -- no setpoint control yet)
+### Phase 1: RS-485 Display Reading + Button Injection MVP
+**Goal**: ESP32 decodes the Balboa VS300FL4 display stream and simulates button presses via photorelays — system is physically wired, live, and self-managing via TOU schedule
+**Depends on**: Nothing (first phase)
+**Requirements**: DISP-01, BUTN-02, BUTN-03, BUTN-04, BUTN-05, CONN-01, CONN-02, CONN-03
+**Status**: Complete (2026-03-30)
 **Plans:** 3 plans (3 complete)
 
 Plans:
@@ -32,30 +30,40 @@ Plans:
 - [x] 01-02-PLAN.md -- ESPHome external component: C++ port of decode logic, climate entity, diagnostic sensors, YAML config
 - [x] 01-03-PLAN.md -- Gap closure: fix requirement statuses, add structural YAML tests, prepare ladder capture tooling
 
-### Phase 2: Button Injection + Closed-Loop Control
-**Goal**: User can set hot tub temperature from Home Assistant with closed-loop verification -- the system writes setpoints via button injection and reads confirmation via display decoding, with automatic drift correction
-**Depends on**: Phase 1 (display reading must work before closed-loop control is meaningful)
-**Requirements**: BUTN-01, BUTN-02, BUTN-03, BUTN-04, BUTN-05, CONN-01, CONN-02, CONN-03, DISP-03, ENRG-01
+### Phase 2: Architecture Fix + HA Integration
+**Goal**: Current water temperature appears in HA as a plain sensor (°F, no conversion); user can set target temperature from HA via a number entity; TOU automation fires correctly with °F values
+**Depends on**: Phase 1 (hardware live, firmware deployed)
+**Requirements**: BUTN-01, DISP-02
 **Success Criteria** (what must be TRUE):
-  1. User can set a target temperature (80-104F) from the HA climate entity and the tub's setpoint changes to match
-  2. Re-home sequence reliably reaches the correct temperature from any starting point (no accumulated drift after repeated cycles)
-  3. No phantom presses or interference occur during or between button simulation sequences
-  4. If the displayed temperature diverges from the expected setpoint (manual override, missed press, power cycle), the system detects the mismatch and auto-corrects
-  5. Firmware can be updated over WiFi (OTA) and ESP32 reconnects automatically after network interruptions with fallback AP mode
-  6. HA dashboard shows cumulative energy cost savings from TOU schedule via utility_meter and template sensors
-**Plans**: TBD
+  1. `sensor.tublemetry_hot_tub_temperature` exists in HA and shows current water temperature as an integer °F value with no unit conversion
+  2. `number.tublemetry_hot_tub_setpoint` exists in HA, accepts 80-104°F in 1° steps, and triggers button injection sequence on change
+  3. TOU automation `ha/tou_automation.yaml` fires using °F values (104, 102, 98, 96) against the number entity
+  4. Component version string is published to a text sensor in HA on boot
+  5. `esphome compile tublemetry.yaml` succeeds with no climate component; all existing tests pass
+**Plans:** 3 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md -- C++ + codegen layer: TublemetrySetpoint class, number.py, temperature sensor in sensor.py, AUTO_LOAD update, tublemetry_display.h/.cpp wiring
+- [ ] 02-02-PLAN.md -- YAML + HA config: add sensor/number entries to tublemetry.yaml, fix tou_automation.yaml with number entity and degF values
+- [ ] 02-03-PLAN.md -- Tests: extend test_esphome_yaml.py with sensor/number entity checks, create test_number_entity.py for range and TOU automation validation
+
+### Phase 3: Community Contribution
+**Goal**: Protocol findings and ESPHome component are published in a form the community can use — documented, tested, and referenced from the relevant ESPHome/Balboa community threads
+**Depends on**: Phase 2 (stable architecture before publishing)
+**Requirements**: None (publication milestone)
+**Success Criteria**:
+  1. Protocol documentation published (RJ45 pinout, clock+data framing, 7-segment lookup table, VS300FL4 quirks vs GS510SZ reference)
+  2. ESPHome external component usable by others (clean YAML interface, no hardcoded assumptions)
+  3. Community threads updated with findings (ESPHome forum, relevant GitHub issues)
+**Plans**: TBD
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2
+Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. RS-485 Display Reading | 3/3 | Complete | 2026-03-14 |
-| 2. Button Injection + Closed-Loop Control | 0/3 | Not started | - |
+| 1. RS-485 Display Reading + Button Injection MVP | 3/3 | Complete | 2026-03-30 |
+| 2. Architecture Fix + HA Integration | 0/3 | Not started | - |
+| 3. Community Contribution | 0/? | Not started | - |
