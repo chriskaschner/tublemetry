@@ -32,11 +32,11 @@ action:
           - condition: time
             weekday: [mon, tue, wed, thu, fri]
         sequence:
-          - action: climate.set_temperature
+          - action: number.set_value
             target:
-              entity_id: climate.hot_tub
+              entity_id: number.tublemetry_hot_tub_setpoint
             data:
-              temperature: 104
+              value: 104
 
       # Weekend: pre-heat to be at 104F by 6am
       - conditions:
@@ -45,11 +45,11 @@ action:
           - condition: time
             weekday: [sat, sun]
         sequence:
-          - action: climate.set_temperature
+          - action: number.set_value
             target:
-              entity_id: climate.hot_tub
+              entity_id: number.tublemetry_hot_tub_setpoint
             data:
-              temperature: 104
+              value: 104
 
       # Weekday: on-peak starts, drop to floor
       - conditions:
@@ -58,11 +58,11 @@ action:
           - condition: time
             weekday: [mon, tue, wed, thu, fri]
         sequence:
-          - action: climate.set_temperature
+          - action: number.set_value
             target:
-              entity_id: climate.hot_tub
+              entity_id: number.tublemetry_hot_tub_setpoint
             data:
-              temperature: 96
+              value: 96
 
       # Weekday: pre-heat for evening before on-peak ends at 7pm
       - conditions:
@@ -71,11 +71,11 @@ action:
           - condition: time
             weekday: [mon, tue, wed, thu, fri]
         sequence:
-          - action: climate.set_temperature
+          - action: number.set_value
             target:
-              entity_id: climate.hot_tub
+              entity_id: number.tublemetry_hot_tub_setpoint
             data:
-              temperature: 102
+              value: 102
 
       # Weekday: evening off-peak, bring to full temp
       - conditions:
@@ -84,19 +84,19 @@ action:
           - condition: time
             weekday: [mon, tue, wed, thu, fri]
         sequence:
-          - action: climate.set_temperature
+          - action: number.set_value
             target:
-              entity_id: climate.hot_tub
+              entity_id: number.tublemetry_hot_tub_setpoint
             data:
-              temperature: 104
+              value: 104
 
       # All days: coast for the night
       - conditions:
           - condition: trigger
             id: coast
         sequence:
-          - action: climate.set_temperature
+          - action: number.set_value
             target:
-              entity_id: climate.hot_tub
+              entity_id: number.tublemetry_hot_tub_setpoint
             data:
-              temperature: 98
+              value: 98
