@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 02-01-PLAN.md — C++ + codegen layer complete
-last_updated: "2026-04-03T23:46:47.625Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-04-03T23:51:07.450Z"
 last_activity: 2026-04-03
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 75
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 ## Current Position
 
 Phase: 02 (Architecture Fix + HA Integration) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-03
 
@@ -48,6 +48,7 @@ Progress: [███████░░░] 75%
 
 *Updated after each plan completion*
 | Phase 02 P01 | 2min | 2 tasks | 7 files |
+| Phase 02 P02 | 2min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -72,6 +73,8 @@ Progress: [███████░░░] 75%
 - [Phase 02]: No device_class on temperature sensor — omitting device_class prevents HA unit conversion; unit_of_measurement='degF' is opaque label
 - [Phase 02]: number.py uses try/except around injector lookup — injector may not exist in read-only deployments
 - [Phase 02]: publish_state() called before request_temperature() in TublemetrySetpoint::control() — optimistic HA update
+- [Phase 02]: temperature sensor entry has no entity_category and no device_class to prevent HA unit conversion
+- [Phase 02]: tou_automation.yaml uses plain degF integers (104/102/98/96) with number.set_value targeting number.tublemetry_hot_tub_setpoint
 
 ### Pending Todos
 
@@ -85,6 +88,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T23:46:47.622Z
-Stopped at: Completed 02-01-PLAN.md — C++ + codegen layer complete
+Last session: 2026-04-03T23:51:07.446Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
