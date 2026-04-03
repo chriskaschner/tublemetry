@@ -18,6 +18,7 @@ from . import TublemetryDisplay
 
 CONF_TUBLEMETRY_ID = "tublemetry_id"
 CONF_DECODE_CONFIDENCE = "decode_confidence"
+CONF_TEMPERATURE = "temperature"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -27,6 +28,11 @@ CONFIG_SCHEMA = cv.Schema(
             icon=ICON_PERCENT,
             accuracy_decimals=0,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_TEMPERATURE): sensor.sensor_schema(
+            unit_of_measurement="°F",
+            icon="mdi:thermometer",
+            accuracy_decimals=0,
         ),
     }
 )
@@ -38,3 +44,7 @@ async def to_code(config):
     if conf := config.get(CONF_DECODE_CONFIDENCE):
         sens = await sensor.new_sensor(conf)
         cg.add(parent.set_decode_confidence_sensor(sens))
+
+    if conf := config.get(CONF_TEMPERATURE):
+        sens = await sensor.new_sensor(conf)
+        cg.add(parent.set_temperature_sensor(sens))

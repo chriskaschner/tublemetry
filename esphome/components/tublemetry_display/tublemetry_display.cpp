@@ -2,7 +2,6 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -57,10 +56,6 @@ static const uint32_t FRAME_GAP_US = 500;
 // Minimum microseconds between valid clock edges (noise rejection).
 // Real clock pulses are ~37us apart; anything shorter is floating-pin noise.
 static const uint32_t MIN_PULSE_US = 10;
-
-// Temperature range for valid readings (Fahrenheit)
-static const float TEMP_MIN = 80.0f;
-static const float TEMP_MAX = 120.0f;
 
 // Static instance pointer for ISR trampoline
 static TublemetryDisplay *isr_instance_ = nullptr;
@@ -159,6 +154,12 @@ void TublemetryDisplay::setup() {
   this->clock_pin_->attach_interrupt(clock_isr_trampoline, this, gpio::INTERRUPT_RISING_EDGE);
 
   ESP_LOGI(TAG, "Clock interrupt attached, waiting for frames...");
+
+  // Publish component version
+  ESP_LOGI(TAG, "Tublemetry version: %s", TUBLEMETRY_VERSION);
+  if (this->version_sensor_ != nullptr) {
+    this->version_sensor_->publish_state(TUBLEMETRY_VERSION);
+  }
 
   // Set up button injector if configured
   if (this->injector_ != nullptr) {
@@ -272,106 +273,72 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
     this->decode_confidence_sensor_->publish_state(confidence);
   }
 
-  // Update temperature state
-  this->update_temperature_(display_str);
+  // Classify display state (temperature, economy, sleep, etc.)
+  this->classify_display_state_(display_str);
 
   if (changed) {
     this->publish_timestamp_();
   }
 }
 
-/// Check if a string represents a valid temperature in the expected range.
-bool TublemetryDisplay::is_valid_temperature_(const std::string &str) {
-  std::string stripped;
-  for (char c : str) {
-    if (c != ' ')
-      stripped += c;
-  }
-
-  if (stripped.empty())
-    return false;
-
-  for (char c : stripped) {
-    if (c < '0' || c > '9')
-      return false;
-  }
-
-  if (stripped.length() < 2 || stripped.length() > 3)
-    return false;
-
-  return true;
-}
-
-/// Update temperature from display string. Valid temperatures update
-/// current_temperature; non-temperature displays keep the last valid
-/// temperature unchanged.
-void TublemetryDisplay::update_temperature_(const std::string &display_str) {
-  if (this->climate_ == nullptr)
-    return;
-
+/// Classify the display string into a state category.
+/// Temperature values are published as raw decoded strings (no unit conversion).
+/// HA is responsible for interpreting units.
+void TublemetryDisplay::classify_display_state_(const std::string &display_str) {
   std::string stripped;
   for (char c : display_str) {
     if (c != ' ')
       stripped += c;
   }
 
-  if (this->is_valid_temperature_(stripped)) {
+  std::string state;
+
+  // Check if it's a 2-3 digit numeric string (temperature reading)
+  bool is_numeric = !stripped.empty() && stripped.length() >= 2 && stripped.length() <= 3;
+  if (is_numeric) {
+    for (char c : stripped) {
+      if (c < '0' || c > '9') {
+        is_numeric = false;
+        break;
+      }
+    }
+  }
+
+  if (is_numeric) {
+    state = "temperature";
     float temp = static_cast<float>(atoi(stripped.c_str()));
-    std::string state = "temperature";
-
-    if (temp < TEMP_MIN || temp > TEMP_MAX) {
-      ESP_LOGW(TAG, "Temperature %.0f outside expected range %.0f-%.0f — ignoring",
-               temp, TEMP_MIN, TEMP_MAX);
-      return;
-    }
-
-    if (temp != this->last_temperature_ || std::isnan(this->last_temperature_)) {
-      this->last_temperature_ = temp;
-      // HA climate API is Celsius-native; convert from Fahrenheit
-      this->climate_->current_temperature = (temp - 32.0f) * 5.0f / 9.0f;
-      this->climate_->publish_state();
-      ESP_LOGI(TAG, "Temperature: %.0f F", temp);
-    }
-
-    // Feed temperature to button injector for closed-loop verification
+    // Feed raw value to button injector for closed-loop verification
     if (this->injector_ != nullptr) {
       this->injector_->feed_display_temperature(temp);
     }
-
-    if (state != this->last_display_state_) {
-      this->last_display_state_ = state;
-      if (this->display_state_sensor_ != nullptr) {
-        this->display_state_sensor_->publish_state(state);
-      }
+    // Publish to HA temperature sensor
+    if (this->temperature_sensor_ != nullptr) {
+      this->temperature_sensor_->publish_state(temp);
     }
+  } else if (stripped == "OH") {
+    state = "OH";
+  } else if (stripped == "ICE") {
+    state = "ICE";
+  } else if (stripped == "Ec") {
+    state = "economy";
+  } else if (stripped == "SL" || stripped == "5L") {
+    state = "sleep";
+  } else if (stripped == "St" || stripped == "5t") {
+    state = "standby";
+  } else if (stripped == "--" || stripped == "---") {
+    state = "startup";
+  } else if (stripped.empty()) {
+    state = "blank";
   } else {
-    std::string state;
-    if (stripped == "OH") {
-      state = "OH";
-    } else if (stripped == "ICE") {
-      state = "ICE";
-    } else if (stripped == "Ec") {
-      state = "economy";
-    } else if (stripped == "SL" || stripped == "5L") {
-      state = "sleep";
-    } else if (stripped == "St" || stripped == "5t") {
-      state = "standby";
-    } else if (stripped == "--" || stripped == "---") {
-      state = "startup";
-    } else if (stripped.empty()) {
-      state = "blank";
-    } else {
-      state = "unknown";
-    }
+    state = "unknown";
+  }
 
-    if (state != this->last_display_state_) {
-      this->last_display_state_ = state;
-      if (this->display_state_sensor_ != nullptr) {
-        this->display_state_sensor_->publish_state(state);
-      }
-      ESP_LOGD(TAG, "Display state: %s (temperature unchanged: %.0f F)",
-               state.c_str(), this->last_temperature_);
+  if (state != this->last_display_state_) {
+    this->last_display_state_ = state;
+    if (this->display_state_sensor_ != nullptr) {
+      this->display_state_sensor_->publish_state(state);
     }
+    ESP_LOGD(TAG, "Display state: %s", state.c_str());
   }
 }
 
@@ -383,51 +350,6 @@ void TublemetryDisplay::publish_timestamp_() {
   char buf[32];
   snprintf(buf, sizeof(buf), "uptime:%lu", (unsigned long) millis());
   this->last_update_sensor_->publish_state(std::string(buf));
-}
-
-// --- TublemetryClimate ---
-
-float TublemetryClimate::get_setup_priority() const {
-  return setup_priority::DATA;
-}
-
-climate::ClimateTraits TublemetryClimate::traits() {
-  auto traits = climate::ClimateTraits();
-  traits.add_supported_mode(climate::CLIMATE_MODE_HEAT);
-  traits.set_supports_current_temperature(true);
-  // HA climate API is Celsius-native. Range: 80-104F = 26.7-40.0C
-  traits.set_visual_min_temperature(26.7f);
-  traits.set_visual_max_temperature(40.0f);
-  traits.set_visual_temperature_step(5.0f / 9.0f);  // 1°F in Celsius
-  return traits;
-}
-
-void TublemetryClimate::control(const climate::ClimateCall &call) {
-  if (call.get_target_temperature().has_value()) {
-    float target_c = *call.get_target_temperature();
-
-    // Snap to nearest whole °F, then convert back to °C for HA
-    float target_f = roundf((target_c * 9.0f / 5.0f) + 32.0f);
-    float snapped_c = (target_f - 32.0f) * 5.0f / 9.0f;
-
-    // Publish the snapped target so HA UI reflects the actual setpoint
-    this->target_temperature = snapped_c;
-    this->publish_state();
-
-    if (this->injector_ != nullptr && this->injector_->is_configured()) {
-      ESP_LOGI(TAG, "Target: %.1f°C = %.0f°F", target_c, target_f);
-      if (!this->injector_->request_temperature(target_f)) {
-        ESP_LOGW(TAG, "Button injection rejected target %.0fF", target_f);
-      }
-    } else {
-      ESP_LOGW(TAG, "No button injector configured — target set in HA only (no physical control)");
-    }
-  }
-
-  if (call.get_mode().has_value()) {
-    this->mode = *call.get_mode();
-    this->publish_state();
-  }
 }
 
 }  // namespace tublemetry_display
