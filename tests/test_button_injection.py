@@ -599,10 +599,14 @@ class TestYamlButtonConfig:
         assert down != clock
         assert down != data
 
-    def test_climate_entity_exists(self, yaml_config):
-        """Climate entity should exist and reference the display."""
+    def test_no_climate_entity(self, yaml_config):
+        """Architecture uses number entity, not climate entity.
+
+        Climate entity was removed in plan 02-01 and replaced with
+        number.tublemetry_hot_tub_setpoint for direct setpoint control.
+        """
         climates = yaml_config.get("climate", [])
-        assert len(climates) >= 1
-        tub_climate = climates[0]
-        assert tub_climate["platform"] == "tublemetry_display"
-        assert tub_climate["tublemetry_id"] == "hot_tub_display"
+        assert len(climates) == 0, (
+            "climate entity must not be present — architecture uses number entity. "
+            "Use number.tublemetry_hot_tub_setpoint for setpoint control."
+        )

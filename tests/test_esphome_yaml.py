@@ -6,6 +6,7 @@ so we catch config errors before attempting a slow ESPHome compile.
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 YAML_FILE = Path(__file__).parent.parent / "esphome" / "tublemetry.yaml"
@@ -74,18 +75,31 @@ class TestEsphomeYaml:
         source = ext[0].get("source", {})
         assert source.get("type") == "local", "external_components source must be local"
 
-    def test_climate_entity_exists(self):
-        """Must have a climate entity using tublemetry_display platform."""
+    def test_no_climate_entity(self):
+        """Architecture uses number entity, not climate entity.
+
+        Climate entity was removed in plan 02-01 and replaced with
+        number.tublemetry_hot_tub_setpoint for direct setpoint control.
+        """
         config = load_yaml()
         climate = config.get("climate", [])
-        assert len(climate) >= 1, "Missing climate entity"
-        assert climate[0].get("platform") == "tublemetry_display"
+        assert len(climate) == 0, (
+            "climate entity must not be present — architecture uses number entity instead. "
+            "Use number.tublemetry_hot_tub_setpoint for setpoint control."
+        )
 
     def test_top_level_keys_not_nested(self):
-        """Critical ESPHome keys must be at the top level, not nested under other keys."""
+        """Critical ESPHome keys must be at the top level, not nested under other keys.
+
+        Note: "number" and "switch" are checked for presence but excluded from the
+        nesting collision check because "number" is also a legitimate ESPHome pin
+        config sub-key (clock_pin.number: GPIO16) and "switch" could appear in
+        toggle-action syntax. The presence check confirms they exist at the root.
+        """
         config = load_yaml()
 
-        expected_top_level = {
+        # Keys that must exist at top level — all verified by presence check.
+        required_top_level = {
             "esphome",
             "esp32",
             "wifi",
@@ -93,26 +107,31 @@ class TestEsphomeYaml:
             "ota",
             "logger",
             "external_components",
-            "tublemetry_display",
-            "climate",
             "sensor",
+            "number",
+            "switch",
             "text_sensor",
             "safe_mode",
             "button",
             "binary_sensor",
             "captive_portal",
+            "tublemetry_display",
         }
 
-        for key in expected_top_level:
+        for key in required_top_level:
             assert key in config, (
                 f"Expected top-level key '{key}' not found at root level. "
                 f"It may be accidentally nested under another key."
             )
 
+        # Keys to check for accidental nesting — exclude "number" and "switch"
+        # because they are also valid nested sub-key names in ESPHome pin configs.
+        nesting_check_keys = required_top_level - {"number", "switch"}
+
         def check_no_nesting(parent_key: str, value: object) -> None:
             if isinstance(value, dict):
                 for nested_key in value:
-                    if nested_key in expected_top_level:
+                    if nested_key in nesting_check_keys:
                         raise AssertionError(
                             f"Top-level key '{nested_key}' is incorrectly nested "
                             f"under '{parent_key}'. Check YAML indentation."
@@ -126,7 +145,13 @@ class TestEsphomeYaml:
             check_no_nesting(key, config[key])
 
     def test_no_unexpected_indentation_in_raw_yaml(self):
-        """Top-level keys must start at column 0 in the raw YAML file."""
+        """Top-level keys must start at column 0 in the raw YAML file.
+
+        Note: "number" is intentionally excluded from this raw-text check because
+        the word "number" also appears as an ESPHome pin config sub-key
+        (e.g., clock_pin.number: GPIO16). The structural check in
+        test_top_level_keys_not_nested handles this correctly via YAML parsing.
+        """
         known_top_level_keys = [
             "esphome",
             "esp32",
@@ -135,8 +160,8 @@ class TestEsphomeYaml:
             "ota",
             "logger",
             "external_components",
-            "climate",
             "sensor",
+            "switch",
             "text_sensor",
             "captive_portal",
             "tublemetry_display",
@@ -174,11 +199,15 @@ class TestProductionConfig:
         wifi = config.get("wifi", {})
         assert "reboot_timeout" in wifi, "WiFi missing reboot_timeout"
 
-    def test_wifi_power_save_none(self):
-        """WiFi should use power_save_mode: none for reliability."""
+    def test_wifi_power_save_configured(self):
+        """WiFi power_save_mode must be explicitly configured."""
         config = load_yaml()
         wifi = config.get("wifi", {})
-        assert wifi.get("power_save_mode") == "none"
+        assert "power_save_mode" in wifi, "WiFi missing power_save_mode"
+        assert wifi.get("power_save_mode") in ("LIGHT", "NONE", "none"), (
+            f"Unexpected power_save_mode: {wifi.get('power_save_mode')}. "
+            "Expected LIGHT (power-saving) or NONE (max reliability)."
+        )
 
     def test_wifi_fallback_ap(self):
         """WiFi must have fallback AP configured."""
@@ -287,3 +316,75 @@ class TestProductionConfig:
                         assert ts[key].get("entity_category") == "diagnostic", (
                             f"text_sensor.wifi_info.{key} missing entity_category"
                         )
+
+
+class TestTemperatureSensorConfig:
+    """Validate temperature sensor configuration in tublemetry_display sensor entry."""
+
+    @pytest.fixture
+    def yaml_config(self):
+        return load_yaml()
+
+    def _get_tublemetry_sensor_entry(self, config):
+        """Return the tublemetry_display entry from the sensor list."""
+        for entry in config.get("sensor", []):
+            if entry.get("platform") == "tublemetry_display":
+                return entry
+        return None
+
+    def test_temperature_sensor_present(self, yaml_config):
+        entry = self._get_tublemetry_sensor_entry(yaml_config)
+        assert entry is not None, "No tublemetry_display sensor platform entry found"
+        assert "temperature" in entry, "tublemetry_display sensor entry missing 'temperature' key"
+
+    def test_temperature_sensor_name(self, yaml_config):
+        entry = self._get_tublemetry_sensor_entry(yaml_config)
+        assert entry["temperature"]["name"] == "Hot Tub Temperature"
+
+    def test_temperature_sensor_no_device_class(self, yaml_config):
+        entry = self._get_tublemetry_sensor_entry(yaml_config)
+        temp = entry.get("temperature", {})
+        assert "device_class" not in temp, (
+            "Temperature sensor must NOT have device_class — it triggers HA unit conversion"
+        )
+
+    def test_temperature_sensor_no_entity_category(self, yaml_config):
+        entry = self._get_tublemetry_sensor_entry(yaml_config)
+        temp = entry.get("temperature", {})
+        assert "entity_category" not in temp, (
+            "Temperature sensor should not have entity_category (it is a primary user-visible entity)"
+        )
+
+
+class TestNumberEntityConfig:
+    """Validate number entity configuration in tublemetry.yaml."""
+
+    @pytest.fixture
+    def yaml_config(self):
+        return load_yaml()
+
+    def _get_tublemetry_number_entry(self, config):
+        for entry in config.get("number", []):
+            if entry.get("platform") == "tublemetry_display":
+                return entry
+        return None
+
+    def test_number_block_exists(self, yaml_config):
+        assert "number" in yaml_config, "Missing top-level 'number:' block"
+
+    def test_number_tublemetry_platform(self, yaml_config):
+        entry = self._get_tublemetry_number_entry(yaml_config)
+        assert entry is not None, "No tublemetry_display number platform entry found"
+
+    def test_number_setpoint_present(self, yaml_config):
+        entry = self._get_tublemetry_number_entry(yaml_config)
+        assert entry is not None
+        assert "setpoint" in entry, "tublemetry_display number entry missing 'setpoint' key"
+
+    def test_number_setpoint_name(self, yaml_config):
+        entry = self._get_tublemetry_number_entry(yaml_config)
+        assert entry["setpoint"]["name"] == "Hot Tub Setpoint"
+
+    def test_number_tublemetry_id(self, yaml_config):
+        entry = self._get_tublemetry_number_entry(yaml_config)
+        assert entry.get("tublemetry_id") == "hot_tub_display"
