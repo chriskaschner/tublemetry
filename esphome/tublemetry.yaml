@@ -111,6 +111,16 @@ sensor:
     decode_confidence:
       name: "Hot Tub Decode Confidence"
       entity_category: "diagnostic"
+    temperature:
+      name: "Hot Tub Temperature"
+
+# --- Number Entities ---
+number:
+  - platform: tublemetry_display
+    tublemetry_id: hot_tub_display
+    setpoint:
+      name: "Hot Tub Setpoint"
+      mode: BOX
 
 # --- Text Sensors ---
 text_sensor:
@@ -143,6 +153,9 @@ text_sensor:
       entity_category: "diagnostic"
     last_update:
       name: "Hot Tub Last Update"
+      entity_category: "diagnostic"
+    version:
+      name: "Hot Tub Component Version"
       entity_category: "diagnostic"
 
 # --- External Component ---
@@ -185,10 +198,3 @@ tublemetry_display:
   # verify_timeout_ms: 10000
   # cooldown_ms: 1000
 
-# Climate entity — thermostat card in HA
-# Sets target temperature via button injection with closed-loop verification
-climate:
-  - platform: tublemetry_display
-    name: "Hot Tub"
-    id: hot_tub
-    tublemetry_id: hot_tub_display
