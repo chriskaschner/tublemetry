@@ -9,6 +9,7 @@ from esphome.components import sensor
 from esphome.const import (
     CONF_ID,
     ENTITY_CATEGORY_DIAGNOSTIC,
+    STATE_CLASS_MEASUREMENT,
     UNIT_PERCENT,
     ICON_PERCENT,
 )
@@ -32,6 +33,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_TEMPERATURE): sensor.sensor_schema(
             icon="mdi:thermometer",
             accuracy_decimals=0,
+            state_class=STATE_CLASS_MEASUREMENT,
         ),
     }
 )
