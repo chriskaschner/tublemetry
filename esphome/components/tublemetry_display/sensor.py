@@ -30,7 +30,6 @@ CONFIG_SCHEMA = cv.Schema(
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_TEMPERATURE): sensor.sensor_schema(
-            unit_of_measurement="°F",
             icon="mdi:thermometer",
             accuracy_decimals=0,
         ),

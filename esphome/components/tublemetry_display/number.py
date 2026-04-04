@@ -24,7 +24,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_TUBLEMETRY_ID): cv.use_id(TublemetryDisplay),
         cv.Optional(CONF_SETPOINT): number.number_schema(
             TublemetrySetpoint,
-            unit_of_measurement="°F",
             icon="mdi:thermometer",
         ),
     }
