@@ -13,3 +13,11 @@
 - OTA indentation was already correct in tubtron.yaml (no fix needed -- verification report was based on stale data)
 - Ladder capture byte_3_value extracts byte at index 3 (tens digit for 3-digit temps); ones digit derived from temperature % 10 in generate_lookup_update
 - pytest pythonpath config added to pyproject.toml for importing 485/scripts modules
+
+---
+
+## Decisions Table
+
+| # | When | Scope | Decision | Choice | Rationale | Revisable? | Made By |
+|---|------|-------|----------|--------|-----------|------------|---------|
+| D001 |  | architecture | Temperature unit handling between ESP32, ESPHome, and Home Assistant | ESP32 publishes raw integer display values with no unit conversion. HA owns the meaning (°F). ESPHome climate component is the wrong abstraction — to be replaced with sensor + number entities. | ESP32 is a display decoder, not a thermostat. It reads 7-segment bytes and outputs integers. The display shows 78, the ESP32 publishes 78. HA declares the unit as °F. ESPHome's climate component assumes Celsius internally and forces a conversion chain that causes double-conversion bugs. Using sensor + number keeps the stack honest: no conversions anywhere, faithful mirror of the physical display. | No — this is a fundamental design principle for the system | collaborative |
