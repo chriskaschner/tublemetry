@@ -172,9 +172,15 @@ external_components:
 # Connect via RJ45 T-splitter. Voltage divider required (5V -> 3.3V).
 #
 # RJ45 wiring:
-#   Pin 4 (Blue)       -> ESP32 GND
-#   Pin 5 (Blue/White) -> voltage divider -> data_pin GPIO
-#   Pin 6 (Green)      -> voltage divider -> clock_pin GPIO
+#   Pin 1 (Orange/White) -> 5V power input to ESP32 (via bulk caps)
+#   Pin 4 (Blue)         -> ESP32 GND
+#   Pin 5 (Blue/White)   -> voltage divider -> data_pin GPIO
+#   Pin 6 (Green)        -> voltage divider -> clock_pin GPIO
+#
+# Power: ESP32 is powered directly from the tub's 5V rail (Pin 1).
+# Bulk capacitors on the 5V input absorb WiFi TX current spikes (~300mA)
+# so the Balboa board's regulator sees a smooth, low draw. Combined with
+# wifi power_save_mode: LIGHT to minimize average consumption.
 #
 # Pull-downs prevent floating-pin noise when display cable is not connected.
 tublemetry_display:
