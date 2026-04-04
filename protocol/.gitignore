@@ -1,0 +1,12 @@
+# Raw captures and logs -- too large for git.
+# See examples/ for small representative samples.
+captures/
+*.sr
+*.csv
+*.pvs
+*.log
+*.txt
+
+# Keep examples/ tracked
+!examples/
+!examples/**
