@@ -45,7 +45,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md -- C++ + codegen layer: TublemetrySetpoint class, number.py, temperature sensor in sensor.py, AUTO_LOAD update, tublemetry_display.h/.cpp wiring
 - [x] 02-02-PLAN.md -- YAML + HA config: add sensor/number entries to tublemetry.yaml, fix tou_automation.yaml with number entity and degF values
-- [ ] 02-03-PLAN.md -- Tests: extend test_esphome_yaml.py with sensor/number entity checks, create test_number_entity.py for range and TOU automation validation
+- [x] 02-03-PLAN.md -- Tests: extend test_esphome_yaml.py with sensor/number entity checks, create test_number_entity.py for range and TOU automation validation
 
 ### Phase 3: Community Contribution
 **Goal**: Protocol findings and ESPHome component are published in a form the community can use — documented, tested, and referenced from the relevant ESPHome/Balboa community threads
