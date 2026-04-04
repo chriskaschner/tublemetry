@@ -189,6 +189,25 @@ class TestEsphomeYaml:
             + "\n".join(errors)
         )
 
+    def test_tublemetry_binary_sensors_present(self):
+        """binary_sensor section must contain a tublemetry_display platform entry
+        with heater, pump, and light keys (added in S03/T01).
+        """
+        config = load_yaml()
+        sensors = config.get("binary_sensor", [])
+        tublemetry_entry = next(
+            (s for s in sensors if s.get("platform") == "tublemetry_display"),
+            None,
+        )
+        assert tublemetry_entry is not None, (
+            "No tublemetry_display binary_sensor platform entry found. "
+            "Expected an entry from binary_sensor.py (S03)."
+        )
+        for key in ("heater", "pump", "light"):
+            assert key in tublemetry_entry, (
+                f"tublemetry_display binary_sensor entry missing '{key}' key"
+            )
+
 
 class TestProductionConfig:
     """Validate production-readiness of ESPHome config."""

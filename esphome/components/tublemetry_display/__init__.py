@@ -16,7 +16,7 @@ from esphome.core import ID
 
 CODEOWNERS = ["@tublemetry"]
 DEPENDENCIES = []
-AUTO_LOAD = ["sensor", "text_sensor", "number"]
+AUTO_LOAD = ["sensor", "text_sensor", "number", "binary_sensor"]
 
 MULTI_CONF = False
 

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "unitType": "run-uat",
+  "unitId": "M002/S03",
+  "startedAt": 1775312060779,
+  "updatedAt": 1775312060780,
+  "phase": "dispatched",
+  "wrapupWarningSent": false,
+  "continueHereFired": false,
+  "timeoutAt": null,
+  "lastProgressAt": 1775312060779,
+  "progressCount": 0,
+  "lastProgressKind": "dispatch",
+  "recoveryAttempts": 0
+}

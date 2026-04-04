@@ -36,3 +36,22 @@ WORKLOG.md
 photos/*.jpeg
 photos/*.jpg
 !photos/web/
+
+# ── GSD baseline (auto-generated) ──
+Thumbs.db
+*.swo
+*~
+*.code-workspace
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+*.pyc
+venv/
+target/
+vendor/
+*.log
+coverage/
+.cache/
+tmp/

@@ -96,6 +96,14 @@ button:
 binary_sensor:
   - platform: status
     name: "Hot Tub API Status"
+  - platform: tublemetry_display
+    tublemetry_id: hot_tub_display
+    heater:
+      name: "Hot Tub Heater"
+    pump:
+      name: "Hot Tub Pump"
+    light:
+      name: "Hot Tub Light"
 
 # --- Numeric Sensors ---
 sensor:
@@ -116,6 +124,8 @@ sensor:
       filters:
         - heartbeat: 30s
         - delta: 1.0
+    detected_setpoint:
+      name: "Hot Tub Detected Setpoint"
 
 # --- Number Entities ---
 number:

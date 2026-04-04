@@ -17,6 +17,7 @@ enum class InjectorPhase : uint8_t {
   VERIFYING,      // Waiting for display stream to confirm setpoint
   COOLDOWN,       // Brief pause after sequence before accepting new requests
   TEST_PRESS,     // Single raw press for hardware testing (bypasses sequence)
+  REFRESHING,     // Net-zero two-press sequence (down then up) to force setpoint flash
 };
 
 /// Result of the last completed sequence.
@@ -69,6 +70,11 @@ class ButtonInjector {
   /// Fire a single raw button press for hardware validation. Only works when IDLE.
   void press_once(bool temp_up);
 
+  /// Fire a net-zero two-press sequence (down then up) to force the display to flash
+  /// the current setpoint. Rejected if busy or not configured. Does NOT modify
+  /// known_setpoint_. Use for auto-refresh keepalive.
+  void refresh();
+
   /// Drive the state machine. Call every loop() iteration.
   void loop();
 
@@ -78,6 +84,9 @@ class ButtonInjector {
 
   /// Abort any in-progress sequence and return to IDLE.
   void abort();
+
+  /// Feed the display-detected setpoint so PROBING phase can be skipped.
+  void set_known_setpoint(float sp) { this->known_setpoint_ = sp; }
 
   // --- Status queries ---
   InjectorPhase phase() const { return this->phase_; }
@@ -138,6 +147,7 @@ class ButtonInjector {
   void loop_verifying_();
   void loop_cooldown_();
   void loop_test_press_();
+  void loop_refreshing_();
   void press_pin_(GPIOPin *pin);
   void release_pin_(GPIOPin *pin);
   void release_all_pins_();

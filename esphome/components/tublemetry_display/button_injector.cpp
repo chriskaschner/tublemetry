@@ -19,6 +19,7 @@ const char *ButtonInjector::phase_to_string(InjectorPhase phase) {
     case InjectorPhase::VERIFYING:  return "verifying";
     case InjectorPhase::COOLDOWN:   return "cooldown";
     case InjectorPhase::TEST_PRESS: return "test_press";
+    case InjectorPhase::REFRESHING: return "refreshing";
     default:                        return "unknown";
   }
 }
@@ -116,6 +117,30 @@ void ButtonInjector::press_once(bool temp_up) {
   this->transition_to_(InjectorPhase::TEST_PRESS);
 }
 
+// --- Refresh (net-zero keepalive) ---
+
+void ButtonInjector::refresh() {
+  if (!this->is_configured()) {
+    ESP_LOGW(TAG, "Cannot refresh — injection pins not configured");
+    return;
+  }
+
+  if (this->is_busy()) {
+    ESP_LOGW(TAG, "Cannot refresh — sequence in progress (phase: %s)",
+             phase_to_string(this->phase_));
+    return;
+  }
+
+  // Set up two presses: first down (presses_remaining_==2), then up (presses_remaining_==1).
+  // adjusting_up_ starts false so first press is down.
+  // known_setpoint_ is intentionally NOT touched.
+  this->presses_remaining_ = 2;
+  this->presses_total_ = 2;
+  this->adjusting_up_ = false;
+  ESP_LOGI(TAG, "Refresh: triggering net-zero REFRESHING phase (down+up)");
+  this->transition_to_(InjectorPhase::REFRESHING);
+}
+
 // --- start_adjusting_ helper ---
 
 void ButtonInjector::start_adjusting_(float from_setpoint) {
@@ -159,6 +184,9 @@ void ButtonInjector::loop() {
       break;
     case InjectorPhase::TEST_PRESS:
       this->loop_test_press_();
+      break;
+    case InjectorPhase::REFRESHING:
+      this->loop_refreshing_();
       break;
   }
 }
@@ -289,6 +317,46 @@ void ButtonInjector::loop_test_press_() {
 }
 
 // --- Feed display temperature ---
+
+void ButtonInjector::loop_refreshing_() {
+  uint32_t now = millis();
+  uint32_t elapsed = now - this->last_action_ms_;
+
+  // Direction: first press (presses_remaining_==2) is DOWN, second (presses_remaining_==1) is UP.
+  // adjusting_up_ starts false (set in refresh()); flip to true after first press completes.
+  GPIOPin *pin = this->adjusting_up_ ? this->temp_up_pin_ : this->temp_down_pin_;
+
+  if (this->pin_active_) {
+    if (elapsed >= this->press_duration_ms_) {
+      this->release_pin_(pin);
+      this->pin_active_ = false;
+      this->last_action_ms_ = now;
+      this->presses_remaining_--;
+
+      ESP_LOGD(TAG, "Refresh press complete (%s), %d remaining",
+               this->adjusting_up_ ? "up" : "down",
+               (int) this->presses_remaining_);
+
+      if (this->presses_remaining_ == 0) {
+        ESP_LOGI(TAG, "Refresh complete -- net-zero, transitioning to COOLDOWN");
+        // known_setpoint_ is intentionally NOT modified here
+        this->transition_to_(InjectorPhase::COOLDOWN);
+        return;
+      }
+
+      // Flip direction for the next press (down->up)
+      this->adjusting_up_ = !this->adjusting_up_;
+    }
+  } else {
+    if (elapsed >= this->inter_press_delay_ms_) {
+      // Re-read pin after possible direction flip
+      GPIOPin *next_pin = this->adjusting_up_ ? this->temp_up_pin_ : this->temp_down_pin_;
+      this->press_pin_(next_pin);
+      this->pin_active_ = true;
+      this->last_action_ms_ = now;
+    }
+  }
+}
 
 void ButtonInjector::feed_display_temperature(float temp) {
   this->last_display_temp_ = temp;

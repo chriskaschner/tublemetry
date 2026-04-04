@@ -68,3 +68,15 @@ entities:
     name: Last Update
   - entity: sensor.tublemetry_hot_tub_wifi_signal
     name: WiFi Signal
+
+---
+# Card 6: Status
+type: entities
+title: Hot Tub Status
+entities:
+  - entity: binary_sensor.tublemetry_hot_tub_heater
+    name: Heater
+  - entity: binary_sensor.tublemetry_hot_tub_pump
+    name: Pump
+  - entity: binary_sensor.tublemetry_hot_tub_light
+    name: Light

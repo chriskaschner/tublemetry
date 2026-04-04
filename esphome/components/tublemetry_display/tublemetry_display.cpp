@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
 namespace esphome {
 namespace tublemetry_display {
@@ -173,6 +174,23 @@ void TublemetryDisplay::loop() {
     this->injector_->loop();
   }
 
+  // Auto-refresh: fire a net-zero REFRESHING press when no setpoint has been detected yet
+  // (NaN) or when the last confirmed setpoint is older than SET_FORCE_INTERVAL_MS.
+  if (this->injector_ != nullptr && this->injector_->is_configured() && !this->injector_->is_busy()) {
+    bool needs_refresh = std::isnan(this->detected_setpoint_) ||
+        (this->last_setpoint_capture_ms_ > 0 &&
+         millis() - this->last_setpoint_capture_ms_ >= SET_FORCE_INTERVAL_MS);
+    if (needs_refresh) {
+      if (std::isnan(this->detected_setpoint_)) {
+        ESP_LOGI(TAG, "Auto-refresh: no setpoint yet -- triggering initial COOL press");
+      } else {
+        ESP_LOGI(TAG, "Auto-refresh: triggering COOL press (setpoint cache age: %lums)",
+                 (unsigned long)(millis() - this->last_setpoint_capture_ms_));
+      }
+      this->injector_->refresh();
+    }
+  }
+
   // Copy frame from ISR with interrupts disabled to prevent torn reads
   portDISABLE_INTERRUPTS();
   bool has_frame = this->isr_data_.frame_ready;
@@ -199,7 +217,18 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
   digit_bytes[0] = (frame_bits >> 17) & 0x7F;  // bits 23-17
   digit_bytes[1] = (frame_bits >> 10) & 0x7F;  // bits 16-10
   digit_bytes[2] = (frame_bits >> 3) & 0x7F;   // bits 9-3
-  // uint8_t status = frame_bits & 0x07;        // bits 2-0 (reserved for future use)
+  uint8_t status = frame_bits & 0x07;           // bits 2-0 (p4)
+
+  // Checksum gate — p1 bits 6,3,1,0 must be zero in valid frames;
+  // p4 bit 0 must also be zero.
+  {
+    uint8_t p1 = digit_bytes[0];
+    static constexpr uint8_t CHECKSUM_MASK = 0x4B;  // bits 6,3,1,0
+    if ((p1 & CHECKSUM_MASK) != 0x00 || (status & 0x01) != 0x00) {
+      ESP_LOGW(TAG, "Frame checksum failed (p1=0x%02X p4=0x%X), dropping", p1, status);
+      return;
+    }
+  }
 
   // Decode each digit
   char decoded[DIGITS_PER_FRAME + 1];
@@ -235,6 +264,19 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
   // Drop partial frames — transitional display states are not actionable
   if (known_count < DIGITS_PER_FRAME) {
     ESP_LOGD(TAG, "Partial frame dropped (raw: %s, confidence: %.0f%%)", raw_hex.c_str(), confidence);
+    return;
+  }
+
+  // Stability filter — require STABLE_THRESHOLD consecutive identical decoded frames
+  if (display_str == this->candidate_display_string_) {
+    if (this->stable_count_ < 255) this->stable_count_++;
+  } else {
+    this->candidate_display_string_ = display_str;
+    this->stable_count_ = 1;
+  }
+  if (this->stable_count_ < STABLE_THRESHOLD) {
+    ESP_LOGD(TAG, "Stability: %d/%d for '%s', holding",
+             this->stable_count_, STABLE_THRESHOLD, display_str.c_str());
     return;
   }
 
@@ -276,6 +318,25 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
   // Classify display state (temperature, economy, sleep, etc.)
   this->classify_display_state_(display_str);
 
+  // Status bit extraction — heater/pump/light
+  // p1_full re-extracts digit_bytes[0] because the checksum scoped block's p1 is out of scope.
+  uint8_t p1_full = (frame_bits >> 17) & 0x7F;
+  bool heater_on = (p1_full >> 2) & 0x01;   // p1 bit 2
+  bool pump_on   = (status >> 2) & 0x01;    // p4 bit 2
+  bool light_on  = (status >> 1) & 0x01;    // p4 bit 1
+  if (static_cast<int8_t>(heater_on) != this->last_heater_) {
+    this->last_heater_ = static_cast<int8_t>(heater_on);
+    if (this->heater_binary_sensor_ != nullptr) this->heater_binary_sensor_->publish_state(heater_on);
+  }
+  if (static_cast<int8_t>(pump_on) != this->last_pump_) {
+    this->last_pump_ = static_cast<int8_t>(pump_on);
+    if (this->pump_binary_sensor_ != nullptr) this->pump_binary_sensor_->publish_state(pump_on);
+  }
+  if (static_cast<int8_t>(light_on) != this->last_light_) {
+    this->last_light_ = static_cast<int8_t>(light_on);
+    if (this->light_binary_sensor_ != nullptr) this->light_binary_sensor_->publish_state(light_on);
+  }
+
   if (changed) {
     this->publish_timestamp_();
   }
@@ -284,6 +345,10 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
 /// Classify the display string into a state category.
 /// Temperature values are published as raw decoded strings (no unit conversion).
 /// HA is responsible for interpreting units.
+///
+/// Set-mode detection: the controller alternates blank→setpoint→blank when the
+/// user holds a button. We detect this pattern and route setpoint flashes to
+/// detected_setpoint_sensor_ rather than temperature_sensor_.
 void TublemetryDisplay::classify_display_state_(const std::string &display_str) {
   std::string stripped;
   for (char c : display_str) {
@@ -307,13 +372,29 @@ void TublemetryDisplay::classify_display_state_(const std::string &display_str) 
   if (is_numeric) {
     state = "temperature";
     float temp = static_cast<float>(atoi(stripped.c_str()));
+
+    // Check set mode timeout before deciding whether this is a setpoint flash
+    if (this->in_set_mode_ && (millis() - this->last_blank_seen_ms_) >= SET_MODE_TIMEOUT_MS) {
+      this->in_set_mode_ = false;
+      this->set_temp_potential_ = NAN;
+      ESP_LOGD(TAG, "Set mode timeout — returning to normal");
+    }
+
     // Feed raw value to button injector for closed-loop verification
     if (this->injector_ != nullptr) {
       this->injector_->feed_display_temperature(temp);
     }
-    // Publish to HA temperature sensor
-    if (this->temperature_sensor_ != nullptr) {
-      this->temperature_sensor_->publish_state(temp);
+
+    if (this->in_set_mode_) {
+      // Setpoint flash — record candidate, suppress temperature sensor publish
+      this->set_temp_potential_ = temp;
+      ESP_LOGD(TAG, "Set mode candidate: %.0fF (suppressing temperature publish)", temp);
+      // temperature_sensor_ publish is intentionally skipped here
+    } else {
+      // Normal temperature — publish to HA
+      if (this->temperature_sensor_ != nullptr) {
+        this->temperature_sensor_->publish_state(temp);
+      }
     }
   } else if (stripped == "OH") {
     state = "OH";
@@ -329,6 +410,23 @@ void TublemetryDisplay::classify_display_state_(const std::string &display_str) 
     state = "startup";
   } else if (stripped.empty()) {
     state = "blank";
+    this->in_set_mode_ = true;
+    this->last_blank_seen_ms_ = millis();
+    ESP_LOGD(TAG, "Set mode entry (blank frame)");
+
+    // Confirmation blank: if we accumulated a candidate, publish detected setpoint
+    if (!std::isnan(this->set_temp_potential_)) {
+      if (std::isnan(this->detected_setpoint_) || this->set_temp_potential_ != this->detected_setpoint_) {
+        this->detected_setpoint_ = this->set_temp_potential_;
+        if (this->detected_setpoint_sensor_ != nullptr)
+          this->detected_setpoint_sensor_->publish_state(this->detected_setpoint_);
+        if (this->injector_ != nullptr)
+          this->injector_->set_known_setpoint(this->detected_setpoint_);
+        ESP_LOGI(TAG, "Setpoint detected: %.0fF", this->detected_setpoint_);
+        this->last_setpoint_capture_ms_ = millis();
+      }
+    }
+    this->set_temp_potential_ = NAN;
   } else {
     state = "unknown";
   }

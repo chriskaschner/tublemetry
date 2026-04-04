@@ -14,7 +14,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
-pythonpath = ["485/scripts"]
+pythonpath = ["485/scripts", "protocol/scripts"]
 
 [dependency-groups]
 dev = [

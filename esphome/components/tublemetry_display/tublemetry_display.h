@@ -5,6 +5,7 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/number/number.h"
 #include "esphome/components/text_sensor/text_sensor.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 #include "button_injector.h"
 
 #include <string>
@@ -60,10 +61,16 @@ class TublemetryDisplay : public Component {
   void set_digit_values_sensor(text_sensor::TextSensor *s) { this->digit_values_sensor_ = s; }
   void set_last_update_sensor(text_sensor::TextSensor *s) { this->last_update_sensor_ = s; }
   void set_version_sensor(text_sensor::TextSensor *s) { this->version_sensor_ = s; }
+  void set_detected_setpoint_sensor(sensor::Sensor *s) { this->detected_setpoint_sensor_ = s; }
 
   // Test helpers — single raw button press for hardware validation
   void test_press_up() { if (this->injector_ != nullptr) this->injector_->press_once(true); }
   void test_press_down() { if (this->injector_ != nullptr) this->injector_->press_once(false); }
+
+  // Binary sensor setters (called from Python codegen)
+  void set_heater_binary_sensor(binary_sensor::BinarySensor *s) { this->heater_binary_sensor_ = s; }
+  void set_pump_binary_sensor(binary_sensor::BinarySensor *s) { this->pump_binary_sensor_ = s; }
+  void set_light_binary_sensor(binary_sensor::BinarySensor *s) { this->light_binary_sensor_ = s; }
 
   // ISR handler (must be public for static trampoline)
   void IRAM_ATTR clock_isr_();
@@ -89,6 +96,11 @@ class TublemetryDisplay : public Component {
   std::string last_raw_hex_;
   std::string last_digit_values_;
 
+  // Stability filter — accumulate consecutive identical decoded frames before publishing
+  std::string candidate_display_string_;
+  uint8_t stable_count_{0};
+  static constexpr uint8_t STABLE_THRESHOLD = 3;
+
   // Diagnostic sensor pointers
   text_sensor::TextSensor *display_string_sensor_{nullptr};
   text_sensor::TextSensor *raw_hex_sensor_{nullptr};
@@ -99,6 +111,25 @@ class TublemetryDisplay : public Component {
   text_sensor::TextSensor *digit_values_sensor_{nullptr};
   text_sensor::TextSensor *last_update_sensor_{nullptr};
   text_sensor::TextSensor *version_sensor_{nullptr};
+
+  // Setpoint detection state machine
+  static constexpr uint32_t SET_MODE_TIMEOUT_MS = 2000;
+  static constexpr uint32_t SET_FORCE_INTERVAL_MS = 300000;  // 5 minutes between auto-refresh triggers
+  bool in_set_mode_{false};
+  uint32_t last_blank_seen_ms_{0};
+  float set_temp_potential_{NAN};
+  float detected_setpoint_{NAN};
+  uint32_t last_setpoint_capture_ms_{0};  // millis() when setpoint was last confirmed
+  sensor::Sensor *detected_setpoint_sensor_{nullptr};
+
+  // Binary sensor pointers (optional — nullptr if not configured)
+  binary_sensor::BinarySensor *heater_binary_sensor_{nullptr};
+  binary_sensor::BinarySensor *pump_binary_sensor_{nullptr};
+  binary_sensor::BinarySensor *light_binary_sensor_{nullptr};
+  // Last-state tracking for publish-on-change (-1 = uninitialized)
+  int8_t last_heater_{-1};
+  int8_t last_pump_{-1};
+  int8_t last_light_{-1};
 
   // Internal methods
   void process_frame_(uint32_t frame_bits);
