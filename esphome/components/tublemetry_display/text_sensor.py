@@ -21,6 +21,7 @@ CONF_RAW_HEX = "raw_hex"
 CONF_DISPLAY_STATE = "display_state"
 CONF_DIGIT_VALUES = "digit_values"
 CONF_LAST_UPDATE = "last_update"
+CONF_VERSION = "version"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -43,6 +44,10 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_LAST_UPDATE): text_sensor.text_sensor_schema(
             icon="mdi:clock-outline",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_VERSION): text_sensor.text_sensor_schema(
+            icon="mdi:tag",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
     }
@@ -71,3 +76,7 @@ async def to_code(config):
     if conf := config.get(CONF_LAST_UPDATE):
         sens = await text_sensor.new_text_sensor(conf)
         cg.add(parent.set_last_update_sensor(sens))
+
+    if conf := config.get(CONF_VERSION):
+        sens = await text_sensor.new_text_sensor(conf)
+        cg.add(parent.set_version_sensor(sens))
