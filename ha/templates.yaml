@@ -1,3 +1,9 @@
-# Empty — template sensors not needed.
-# climate.tublemetry_hot_tub publishes in °F natively.
-# Use climate entity attributes directly in Lovelace history charts.
+# Template sensors for HA-side interpretation of tublemetry data.
+
+template:
+  - sensor:
+      - name: Outdoor Temperature
+        unit_of_measurement: "°F"
+        state: "{{ state_attr('weather.forecast_home', 'temperature') }}"
+        device_class: temperature
+        state_class: measurement

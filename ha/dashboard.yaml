@@ -1,39 +1,65 @@
-# Hot Tub Dashboard — Lovelace YAML
+# Hot Tub Dashboard -- Lovelace YAML
 #
 # Paste each card separately into the Lovelace raw YAML editor:
-# Edit Dashboard → Add Card → Manual (bottom of card picker list).
-#
-# All temperatures in °F. No template sensors needed.
+# Edit Dashboard -> Add Card -> Manual (bottom of card picker list).
 
 ---
-# Card 1: Thermostat control card
-type: thermostat
-entity: climate.tublemetry_hot_tub
+# Card 1: Temperature gauge
+type: gauge
+entity: sensor.tublemetry_hot_tub_temperature
 name: Hot Tub
+min: 32
+max: 110
+needle: true
+segments:
+  - from: 32
+    color: blue
+  - from: 99
+    color: orange
+  - from: 104
+    color: red
 
 ---
-# Card 2: Temperature history chart — current temp vs setpoint
-type: history-graph
-title: Hot Tub Temperature vs Setpoint
-hours_to_show: 24
-refresh_interval: 60
+# Card 2: Setpoint control + current temp
+type: entities
+title: Hot Tub
 entities:
-  - entity: climate.tublemetry_hot_tub
-    attribute: current_temperature
-    name: Water Temp (°F)
-  - entity: climate.tublemetry_hot_tub
-    attribute: temperature
-    name: Setpoint (°F)
+  - entity: sensor.tublemetry_hot_tub_temperature
+    name: Water Temperature
+  - entity: number.tublemetry_hot_tub_setpoint
+    name: Setpoint
 
 ---
-# Card 3: Diagnostics
+# Card 3: Thermodynamics -- temp vs setpoint vs outdoor air
+type: statistics-graph
+title: Hot Tub Thermodynamics
+period: hourly
+stat_types:
+  - mean
+entities:
+  - entity: sensor.tublemetry_hot_tub_temperature
+    name: Water Temp
+  - entity: sensor.outdoor_temperature
+    name: Outdoor Air
+
+---
+# Card 4: Short-term history (24h detail)
+type: history-graph
+title: Hot Tub (24h)
+hours_to_show: 24
+entities:
+  - entity: sensor.tublemetry_hot_tub_temperature
+    name: Water Temp
+  - entity: number.tublemetry_hot_tub_setpoint
+    name: Setpoint
+  - entity: sensor.outdoor_temperature
+    name: Outdoor Air
+
+---
+# Card 5: Diagnostics
 type: entities
 title: Hot Tub Diagnostics
 entities:
-  - entity: automation.hot_tub_tou_schedule
-    name: TOU Automation
-  - entity: climate.tublemetry_hot_tub
-    name: Climate Entity
   - entity: sensor.tublemetry_hot_tub_display_state
     name: Display State
   - entity: sensor.tublemetry_hot_tub_decode_confidence

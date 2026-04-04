@@ -113,6 +113,9 @@ sensor:
       entity_category: "diagnostic"
     temperature:
       name: "Hot Tub Temperature"
+      filters:
+        - heartbeat: 30s
+        - delta: 1.0
 
 # --- Number Entities ---
 number:
