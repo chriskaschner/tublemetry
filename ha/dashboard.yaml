@@ -1,0 +1,44 @@
+# Hot Tub Dashboard — Lovelace YAML
+#
+# Paste each card separately into the Lovelace raw YAML editor:
+# Edit Dashboard → Add Card → Manual (bottom of card picker list).
+#
+# All temperatures in °F. No template sensors needed.
+
+---
+# Card 1: Thermostat control card
+type: thermostat
+entity: climate.tublemetry_hot_tub
+name: Hot Tub
+
+---
+# Card 2: Temperature history chart — current temp vs setpoint
+type: history-graph
+title: Hot Tub Temperature vs Setpoint
+hours_to_show: 24
+refresh_interval: 60
+entities:
+  - entity: climate.tublemetry_hot_tub
+    attribute: current_temperature
+    name: Water Temp (°F)
+  - entity: climate.tublemetry_hot_tub
+    attribute: temperature
+    name: Setpoint (°F)
+
+---
+# Card 3: Diagnostics
+type: entities
+title: Hot Tub Diagnostics
+entities:
+  - entity: automation.hot_tub_tou_schedule
+    name: TOU Automation
+  - entity: climate.tublemetry_hot_tub
+    name: Climate Entity
+  - entity: sensor.tublemetry_hot_tub_display_state
+    name: Display State
+  - entity: sensor.tublemetry_hot_tub_decode_confidence
+    name: Decode Confidence
+  - entity: sensor.tublemetry_hot_tub_last_update
+    name: Last Update
+  - entity: sensor.tublemetry_hot_tub_wifi_signal
+    name: WiFi Signal

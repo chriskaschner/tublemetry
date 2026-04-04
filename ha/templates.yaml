@@ -1,0 +1,3 @@
+# Empty — template sensors not needed.
+# climate.tublemetry_hot_tub publishes in °F natively.
+# Use climate entity attributes directly in Lovelace history charts.
