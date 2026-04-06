@@ -1,0 +1,119 @@
+- platform: sql
+  db_url: sqlite:////config/home-assistant_v2.db
+  scan_interval: 3600
+  queries:
+    - name: "Hot Tub Heating Rate"
+      query: >
+        WITH
+        sp_meta AS (
+          SELECT metadata_id FROM states_meta
+          WHERE entity_id = 'number.tublemetry_hot_tub_setpoint'
+        ),
+        wt_meta AS (
+          SELECT metadata_id FROM states_meta
+          WHERE entity_id = 'sensor.tublemetry_hot_tub_temperature'
+        ),
+        sp_states AS (
+          SELECT CAST(state AS REAL) AS setpoint, last_updated_ts AS ts
+          FROM states
+          WHERE metadata_id = (SELECT metadata_id FROM sp_meta)
+            AND state NOT IN ('unknown','unavailable','')
+            AND last_updated_ts > (strftime('%s','now') - 30*86400)
+          ORDER BY last_updated_ts
+        ),
+        sp_raises AS (
+          SELECT setpoint AS target, ts AS raise_ts,
+            LAG(setpoint) OVER (ORDER BY ts) AS prev_setpoint
+          FROM sp_states
+        ),
+        raises AS (
+          SELECT target, raise_ts FROM sp_raises
+          WHERE target > prev_setpoint AND prev_setpoint IS NOT NULL
+        ),
+        events AS (
+          SELECT r.raise_ts, r.target,
+            (SELECT CAST(state AS REAL) FROM states
+             WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+               AND state NOT IN ('unknown','unavailable','')
+               AND last_updated_ts <= r.raise_ts
+             ORDER BY last_updated_ts DESC LIMIT 1) AS start_temp,
+            (SELECT last_updated_ts FROM states
+             WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+               AND state NOT IN ('unknown','unavailable','')
+               AND CAST(state AS REAL) >= r.target - 1.0
+               AND last_updated_ts > r.raise_ts
+               AND last_updated_ts < r.raise_ts + 14400
+             ORDER BY last_updated_ts ASC LIMIT 1) AS reached_ts
+          FROM raises r
+        ),
+        rated AS (
+          SELECT
+            (target - start_temp) / ((reached_ts - raise_ts) / 60.0) AS deg_per_min,
+            1.0 / (1.0 + (strftime('%s','now') - raise_ts) / 86400.0) AS weight
+          FROM events
+          WHERE reached_ts IS NOT NULL AND start_temp IS NOT NULL
+            AND target > start_temp + 0.5
+            AND (reached_ts - raise_ts) > 120
+            AND (reached_ts - raise_ts) < 14400
+        )
+        SELECT ROUND(SUM(deg_per_min * weight) / NULLIF(SUM(weight), 0), 4) AS value
+        FROM rated;
+      column: "value"
+      unit_of_measurement: "°F/min"
+
+- platform: sql
+  db_url: sqlite:////config/home-assistant_v2.db
+  scan_interval: 3600
+  queries:
+    - name: "Hot Tub Cooling Rate"
+      query: >
+        WITH
+        wt_meta AS (
+          SELECT metadata_id FROM states_meta
+          WHERE entity_id = 'sensor.tublemetry_hot_tub_temperature'
+        ),
+        h_meta AS (
+          SELECT metadata_id FROM states_meta
+          WHERE entity_id = 'binary_sensor.tublemetry_hot_tub_heater'
+        ),
+        heater AS (
+          SELECT state, last_updated_ts AS ts,
+            LEAD(last_updated_ts) OVER (ORDER BY last_updated_ts) AS next_ts
+          FROM states
+          WHERE metadata_id = (SELECT metadata_id FROM h_meta)
+            AND state NOT IN ('unknown','unavailable','')
+            AND last_updated_ts > (strftime('%s','now') - 30*86400)
+          ORDER BY last_updated_ts
+        ),
+        off_windows AS (
+          SELECT ts AS off_start, next_ts AS off_end
+          FROM heater
+          WHERE state = 'off' AND next_ts IS NOT NULL
+            AND (next_ts - ts) >= 7200
+        ),
+        coolings AS (
+          SELECT w.off_start, w.off_end,
+            (SELECT CAST(state AS REAL) FROM states
+             WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+               AND state NOT IN ('unknown','unavailable','')
+               AND last_updated_ts >= w.off_start
+             ORDER BY last_updated_ts ASC LIMIT 1) AS temp_start,
+            (SELECT CAST(state AS REAL) FROM states
+             WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+               AND state NOT IN ('unknown','unavailable','')
+               AND last_updated_ts <= w.off_end
+             ORDER BY last_updated_ts DESC LIMIT 1) AS temp_end
+          FROM off_windows w
+        ),
+        rated AS (
+          SELECT
+            (temp_start - temp_end) / ((off_end - off_start) / 3600.0) AS deg_per_hr,
+            1.0 / (1.0 + (strftime('%s','now') - off_start) / 86400.0) AS weight
+          FROM coolings
+          WHERE temp_start IS NOT NULL AND temp_end IS NOT NULL
+            AND temp_start > temp_end AND (temp_start - temp_end) < 20
+        )
+        SELECT ROUND(SUM(deg_per_hr * weight) / NULLIF(SUM(weight), 0), 2) AS value
+        FROM rated;
+      column: "value"
+      unit_of_measurement: "°F/hr"

@@ -1,9 +1,31 @@
-# Template sensors for HA-side interpretation of tublemetry data.
+- sensor:
+    - name: "Hot Tub Preheat Minutes"
+      unit_of_measurement: "min"
+      state_class: measurement
+      icon: mdi:timer-outline
+      state: >
+        {% set rate = states('sensor.hot_tub_heating_rate') | float(0) %}
+        {% set current = states('sensor.tublemetry_hot_tub_temperature') | float(0) %}
+        {% set target = states('number.tublemetry_hot_tub_setpoint') | float(0) %}
+        {% if rate > 0 and target > current %}
+          {{ ((target - current) / rate) | round(0) | int }}
+        {% else %}
+          0
+        {% endif %}
 
-template:
-  - sensor:
-      - name: Outdoor Temperature
-        unit_of_measurement: "°F"
-        state: "{{ state_attr('weather.forecast_home', 'temperature') }}"
-        device_class: temperature
-        state_class: measurement
+    - name: "Hot Tub Preheat ETA"
+      icon: mdi:clock-outline
+      state: >
+        {% set mins = states('sensor.hot_tub_preheat_minutes') | int(0) %}
+        {% set current = states('sensor.tublemetry_hot_tub_temperature') | float(0) %}
+        {% set target = states('number.tublemetry_hot_tub_setpoint') | float(0) %}
+        {% set rate = states('sensor.hot_tub_heating_rate') | float(0) %}
+        {% if rate == 0 %}
+          No rate data yet
+        {% elif target <= current %}
+          Ready now
+        {% elif mins < 60 %}
+          ~{{ mins }} min
+        {% else %}
+          ~{{ (mins / 60) | round(1) }}h ({{ mins }} min)
+        {% endif %}
