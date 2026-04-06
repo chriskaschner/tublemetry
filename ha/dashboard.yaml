@@ -30,15 +30,15 @@ entities:
     name: Setpoint
 
 ---
-# Card 3: Thermodynamics -- temp vs setpoint vs outdoor air
-type: statistics-graph
+# Card 3: Thermodynamics -- temp vs setpoint vs outdoor air (72h)
+type: history-graph
 title: Hot Tub Thermodynamics
-period: hourly
-stat_types:
-  - mean
+hours_to_show: 72
 entities:
   - entity: sensor.tublemetry_hot_tub_temperature
     name: Water Temp
+  - entity: number.tublemetry_hot_tub_setpoint
+    name: Setpoint
   - entity: sensor.outdoor_temperature
     name: Outdoor Air
 
