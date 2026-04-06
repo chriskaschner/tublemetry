@@ -80,3 +80,21 @@ entities:
     name: Pump
   - entity: binary_sensor.tublemetry_hot_tub_light
     name: Light
+
+---
+# Card 7: Thermal model — preheat planning
+# Requires ha/thermal_model.yaml to be configured in HA.
+type: entities
+title: Hot Tub Preheat
+entities:
+  - entity: sensor.hot_tub_preheat_eta
+    name: Time to Setpoint
+    icon: mdi:clock-outline
+  - entity: sensor.hot_tub_preheat_minutes
+    name: Preheat Minutes
+  - entity: sensor.hot_tub_heating_rate
+    name: Heating Rate
+  - entity: sensor.hot_tub_cooling_rate
+    name: Cooling Rate (°F/hr lost)
+  - entity: sensor.outdoor_temperature
+    name: Outdoor Temp
