@@ -3,6 +3,8 @@
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/components/text_sensor/text_sensor.h"
+#include "esphome/components/number/number.h"
+#include "esphome/components/sensor/sensor.h"
 
 #include <string>
 
@@ -15,6 +17,7 @@ enum class InjectorPhase : uint8_t {
   PROBING,        // One down press to reveal current setpoint from display
   ADJUSTING,      // Pressing up or down to reach target from known setpoint
   VERIFYING,      // Waiting for display stream to confirm setpoint
+  RETRYING,       // Backoff wait before re-probe attempt
   COOLDOWN,       // Brief pause after sequence before accepting new requests
   TEST_PRESS,     // Single raw press for hardware testing (bypasses sequence)
   REFRESHING,     // Net-zero two-press sequence (down then up) to force setpoint flash
@@ -22,10 +25,12 @@ enum class InjectorPhase : uint8_t {
 
 /// Result of the last completed sequence.
 enum class InjectorResult : uint8_t {
-  NONE = 0,       // No sequence has run yet
-  SUCCESS,        // Display confirmed target temperature
-  TIMEOUT,        // Verification timed out waiting for display confirmation
-  ABORTED,        // Sequence was aborted (e.g. new request while verifying)
+  NONE = 0,           // No sequence has run yet
+  SUCCESS,            // Display confirmed target temperature
+  TIMEOUT,            // Verification timed out waiting for display confirmation
+  ABORTED,            // Sequence was aborted (e.g. new request while verifying)
+  FAILED,             // All retries exhausted
+  BUDGET_EXCEEDED,    // Attempt exceeded press budget (triggers retry)
 };
 
 /// Non-blocking button injection via photorelay GPIO outputs.
@@ -57,6 +62,13 @@ class ButtonInjector {
 
   // --- Diagnostic sensor setters ---
   void set_injection_state_sensor(text_sensor::TextSensor *s) { this->injection_state_sensor_ = s; }
+  void set_last_command_result_sensor(text_sensor::TextSensor *s) { this->last_command_result_sensor_ = s; }
+  void set_injection_phase_sensor(text_sensor::TextSensor *s) { this->injection_phase_sensor_ = s; }
+  void set_retry_count_sensor(sensor::Sensor *s) { this->retry_count_sensor_ = s; }
+
+  // --- Deferred setpoint publish (D-14) ---
+  void set_setpoint_number(number::Number *n) { this->setpoint_number_ = n; }
+  void set_last_confirmed_setpoint(float sp) { this->last_confirmed_setpoint_ = sp; }
 
   // --- Setup (called once from parent setup) ---
   void setup();
@@ -136,8 +148,24 @@ class ButtonInjector {
   uint32_t success_count_{0};
   std::string last_error_;
 
+  // Retry state
+  uint8_t retry_count_{0};
+  uint8_t max_retries_{3};          // D-02: 3 retries = 4 total attempts
+  uint32_t retry_backoff_ms_{0};    // Current backoff delay
+
+  // Press budget (D-06)
+  uint8_t press_budget_{0};         // N+2 for current attempt
+  uint8_t presses_consumed_{0};     // Presses fired in current ADJUSTING phase
+
+  // Deferred setpoint publish (D-14)
+  number::Number *setpoint_number_{nullptr};
+  float last_confirmed_setpoint_{NAN};
+
   // Diagnostic sensors
   text_sensor::TextSensor *injection_state_sensor_{nullptr};
+  text_sensor::TextSensor *last_command_result_sensor_{nullptr};
+  text_sensor::TextSensor *injection_phase_sensor_{nullptr};
+  sensor::Sensor *retry_count_sensor_{nullptr};
 
   // Internal methods
   void transition_to_(InjectorPhase new_phase);
@@ -145,6 +173,7 @@ class ButtonInjector {
   void loop_probing_();
   void loop_adjusting_();
   void loop_verifying_();
+  void loop_retrying_();
   void loop_cooldown_();
   void loop_test_press_();
   void loop_refreshing_();
@@ -153,6 +182,8 @@ class ButtonInjector {
   void release_all_pins_();
   void publish_state_();
   void finish_sequence_(InjectorResult result, const std::string &error = "");
+  void attempt_failed_(bool budget_exceeded);
+  uint32_t calculate_backoff_ms_(uint8_t retry_num);
 };
 
 }  // namespace tublemetry_display

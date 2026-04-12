@@ -17,6 +17,7 @@ const char *ButtonInjector::phase_to_string(InjectorPhase phase) {
     case InjectorPhase::PROBING:    return "probing";
     case InjectorPhase::ADJUSTING:  return "adjusting";
     case InjectorPhase::VERIFYING:  return "verifying";
+    case InjectorPhase::RETRYING:   return "retrying";
     case InjectorPhase::COOLDOWN:   return "cooldown";
     case InjectorPhase::TEST_PRESS: return "test_press";
     case InjectorPhase::REFRESHING: return "refreshing";
@@ -26,11 +27,13 @@ const char *ButtonInjector::phase_to_string(InjectorPhase phase) {
 
 const char *ButtonInjector::result_to_string(InjectorResult result) {
   switch (result) {
-    case InjectorResult::NONE:    return "none";
-    case InjectorResult::SUCCESS: return "success";
-    case InjectorResult::TIMEOUT: return "timeout";
-    case InjectorResult::ABORTED: return "aborted";
-    default:                      return "unknown";
+    case InjectorResult::NONE:            return "none";
+    case InjectorResult::SUCCESS:         return "success";
+    case InjectorResult::TIMEOUT:         return "timeout";
+    case InjectorResult::ABORTED:         return "aborted";
+    case InjectorResult::FAILED:          return "failed";
+    case InjectorResult::BUDGET_EXCEEDED: return "budget_exceeded";
+    default:                              return "unknown";
   }
 }
 
@@ -81,6 +84,8 @@ bool ButtonInjector::request_temperature(float target) {
   target = roundf(target);
   this->target_temp_ = target;
   this->sequence_count_++;
+  this->retry_count_ = 0;
+  this->presses_consumed_ = 0;
 
   if (!std::isnan(this->known_setpoint_)) {
     // Setpoint is known — go directly to adjusting (no probe needed)
@@ -153,8 +158,12 @@ void ButtonInjector::start_adjusting_(float from_setpoint) {
     return;
   }
 
+  uint8_t abs_delta = static_cast<uint8_t>(std::abs(delta));
+  this->press_budget_ = abs_delta + 2;  // D-06: N+2 budget
+  this->presses_consumed_ = 0;
+
   this->adjusting_up_ = (delta > 0);
-  this->presses_remaining_ = static_cast<uint8_t>(std::abs(delta));
+  this->presses_remaining_ = abs_delta;
   this->presses_total_ = this->presses_remaining_;
 
   ESP_LOGI(TAG, "Adjusting: %d %s-presses from %.0fF to %.0fF",
@@ -178,6 +187,9 @@ void ButtonInjector::loop() {
       break;
     case InjectorPhase::VERIFYING:
       this->loop_verifying_();
+      break;
+    case InjectorPhase::RETRYING:
+      this->loop_retrying_();
       break;
     case InjectorPhase::COOLDOWN:
       this->loop_cooldown_();
@@ -245,6 +257,16 @@ void ButtonInjector::loop_adjusting_() {
       this->pin_active_ = false;
       this->last_action_ms_ = now;
       this->presses_remaining_--;
+      this->presses_consumed_++;
+
+      // D-06: Budget enforcement
+      if (this->presses_consumed_ > this->press_budget_) {
+        ESP_LOGW(TAG, "Press budget exceeded (%d/%d) -- aborting attempt",
+                 (int)this->presses_consumed_, (int)this->press_budget_);
+        this->release_all_pins_();
+        this->attempt_failed_(/* budget_exceeded = */ true);
+        return;
+      }
 
       uint8_t completed = this->presses_total_ - this->presses_remaining_;
       ESP_LOGD(TAG, "Adjust press %d/%d complete (%s)",
@@ -314,6 +336,49 @@ void ButtonInjector::loop_test_press_() {
       this->last_action_ms_ = now;
     }
   }
+}
+
+// --- Retry logic ---
+
+void ButtonInjector::loop_retrying_() {
+  uint32_t now = millis();
+  uint32_t elapsed = now - this->phase_start_ms_;
+
+  if (elapsed >= this->retry_backoff_ms_) {
+    ESP_LOGI(TAG, "Retry %d/%d: backoff complete (%dms), re-probing",
+             (int)this->retry_count_, (int)this->max_retries_,
+             (int)this->retry_backoff_ms_);
+    // D-01: Always re-probe from scratch -- invalidate cache
+    this->known_setpoint_ = NAN;
+    this->probed_setpoint_ = NAN;
+    this->transition_to_(InjectorPhase::PROBING);
+  }
+}
+
+void ButtonInjector::attempt_failed_(bool budget_exceeded) {
+  if (this->retry_count_ < this->max_retries_) {
+    this->retry_count_++;
+    this->retry_backoff_ms_ = this->calculate_backoff_ms_(this->retry_count_);
+    ESP_LOGW(TAG, "Attempt failed (%s) -- retry %d/%d in %dms",
+             budget_exceeded ? "budget exceeded" : "timeout",
+             (int)this->retry_count_, (int)this->max_retries_,
+             (int)this->retry_backoff_ms_);
+    this->known_setpoint_ = NAN;  // D-01
+    this->transition_to_(InjectorPhase::RETRYING);
+  } else {
+    ESP_LOGE(TAG, "All %d retries exhausted -- marking FAILED",
+             (int)this->max_retries_);
+    this->finish_sequence_(InjectorResult::FAILED,
+                           budget_exceeded ? "budget exceeded, retries exhausted"
+                                           : "timeout, retries exhausted");
+  }
+}
+
+uint32_t ButtonInjector::calculate_backoff_ms_(uint8_t retry_num) {
+  // D-03: 5s, 15s, 45s exponential backoff
+  static const uint32_t BACKOFF_TABLE[] = {5000, 15000, 45000};
+  if (retry_num == 0 || retry_num > 3) return 5000;
+  return BACKOFF_TABLE[retry_num - 1];
 }
 
 // --- Feed display temperature ---
@@ -413,6 +478,16 @@ void ButtonInjector::publish_state_() {
     }
     this->injection_state_sensor_->publish_state(state);
   }
+
+  // injection_phase sensor (clean phase name without target suffix)
+  if (this->injection_phase_sensor_ != nullptr) {
+    this->injection_phase_sensor_->publish_state(phase_to_string(this->phase_));
+  }
+
+  // retry_count sensor
+  if (this->retry_count_sensor_ != nullptr) {
+    this->retry_count_sensor_->publish_state(static_cast<float>(this->retry_count_));
+  }
 }
 
 void ButtonInjector::finish_sequence_(InjectorResult result, const std::string &error) {
@@ -422,10 +497,33 @@ void ButtonInjector::finish_sequence_(InjectorResult result, const std::string &
 
   if (result == InjectorResult::SUCCESS) {
     this->success_count_++;
-    // Cache the confirmed setpoint for direct-delta on next call
     this->known_setpoint_ = this->target_temp_;
+    this->last_confirmed_setpoint_ = this->target_temp_;
+
+    // D-14: Publish confirmed setpoint
+    if (this->setpoint_number_ != nullptr) {
+      this->setpoint_number_->publish_state(this->target_temp_);
+    }
+  } else if (result == InjectorResult::TIMEOUT || result == InjectorResult::BUDGET_EXCEEDED) {
+    // Route through retry logic
+    this->known_setpoint_ = NAN;
+    this->attempt_failed_(result == InjectorResult::BUDGET_EXCEEDED);
+    // attempt_failed_ handles transition (RETRYING or COOLDOWN+FAILED)
+
+    // Publish result sensor
+    if (this->last_command_result_sensor_ != nullptr) {
+      this->last_command_result_sensor_->publish_state(result_to_string(this->last_result_));
+    }
+    return;  // attempt_failed_ already handled transition
+  } else if (result == InjectorResult::FAILED) {
+    this->known_setpoint_ = NAN;
+
+    // D-14: Revert setpoint to last known on FAILED
+    if (this->setpoint_number_ != nullptr && !std::isnan(this->last_confirmed_setpoint_)) {
+      this->setpoint_number_->publish_state(this->last_confirmed_setpoint_);
+    }
   } else {
-    // Timeout or abort: setpoint location is uncertain — force probe on next sequence
+    // ABORTED
     this->known_setpoint_ = NAN;
   }
 
@@ -437,6 +535,11 @@ void ButtonInjector::finish_sequence_(InjectorResult result, const std::string &
 
   if (!error.empty()) {
     ESP_LOGW(TAG, "Last error: %s", error.c_str());
+  }
+
+  // Publish result sensor
+  if (this->last_command_result_sensor_ != nullptr) {
+    this->last_command_result_sensor_->publish_state(result_to_string(result));
   }
 
   this->transition_to_(InjectorPhase::COOLDOWN);

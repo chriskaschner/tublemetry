@@ -13,6 +13,8 @@ class TublemetrySetpoint : public number::Number {
  protected:
   void control(float value) override;
   ButtonInjector *injector_{nullptr};
+  float pending_target_{NAN};
+  float last_confirmed_setpoint_{NAN};
 };
 
 }  // namespace tublemetry_display
