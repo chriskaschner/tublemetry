@@ -31,6 +31,9 @@ condition:
     value_template: >
       {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
          and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
+  - condition: state
+    entity_id: binary_sensor.tublemetry_hot_tub_api_status
+    state: "on"
 
 action:
   - action: input_boolean.turn_off

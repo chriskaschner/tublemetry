@@ -123,9 +123,9 @@ action:
               entity_id: number.tublemetry_hot_tub_setpoint
             data:
               value: >
-                {{ [states('number.tublemetry_hot_tub_setpoint') | float -
-                   (states('sensor.tublemetry_hot_tub_temperature') | float -
-                    states('number.tublemetry_hot_tub_setpoint') | float), 80] | max | int }}
+                {{ [states('number.tublemetry_hot_tub_setpoint') | float(80) -
+                   (states('sensor.tublemetry_hot_tub_temperature') | float(80) -
+                    states('number.tublemetry_hot_tub_setpoint') | float(80)), 80] | max | int }}
 
     # WARNING (default): 2-4F overshoot for 5 min -- monitoring only
     default:

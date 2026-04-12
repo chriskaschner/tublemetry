@@ -199,6 +199,14 @@ class TestThermalRunawayClear:
                     return
         pytest.fail("No state condition for thermal_runaway_active")
 
+    def test_condition_gates_on_esp32_online(self, clear_config):
+        """Must not clear flag on stale data -- require ESP32 online."""
+        conditions = clear_config["condition"]
+        raw = yaml.dump(conditions)
+        assert "tublemetry_hot_tub_api_status" in raw, (
+            "Auto-clear must gate on ESP32 online status"
+        )
+
     def test_action_turns_off_flag(self, clear_config):
         actions = clear_config["action"]
         types = [a.get("action") for a in actions]
