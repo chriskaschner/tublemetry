@@ -1,187 +1,177 @@
 # Project Research Summary
 
-**Project:** Tubtron -- ESP32 Hot Tub Automation (Balboa VS300FL4)
-**Domain:** ESP32 embedded firmware + Home Assistant integration for TOU energy optimization
-**Researched:** 2026-03-13
-**Confidence:** HIGH (stack, architecture, Phase 1 pitfalls well-validated; Phase 2 protocol decoding is the primary uncertainty)
+**Project:** Tubtron v2.0 -- Closed-Loop Trust
+**Domain:** Closed-loop embedded control for hot tub automation (ESP32/ESPHome + Home Assistant)
+**Researched:** 2026-04-12
+**Confidence:** HIGH
 
 ## Executive Summary
 
-Tubtron is a bridge device: an ESP32 running ESPHome firmware sits between a Balboa VS300FL4 hot tub control board and Home Assistant, translating HA climate commands into analog button presses. The core value proposition is Time-of-Use rate optimization -- holding the tub at 99F during on-peak hours and raising it to 104F off-peak, saving roughly $10/month. The approach is non-invasive: the hot tub board is completely unmodified, and the ESP32 taps existing RJ45 panel pins via optoisolated photorelays to simulate button presses. This button injection strategy is proven (manual bridging test already confirmed it works), heavily precedented in the Balboa community (GS-series projects), and is the only viable command path for the VS-series because no digital command channel exists.
+Tubtron v2.0 adds closed-loop reliability to an already-working hot tub TOU automation system. The existing stack (ESP32/ESPHome firmware, Home Assistant on RPi4, AQY212EH photorelays for button injection, 391-test Python decode library) is validated and stays unchanged. The milestone extends it with command-verify-retry feedback, independent power-based heater validation via Enphase, and a reproducible data export pipeline. All new capabilities are additive: they do not redesign what works.
 
-The recommended implementation is an ESPHome external component (C++) that exposes a HA climate entity from day one. This is a deliberate architectural choice: a proper climate entity gives HA a thermostat card and `climate.set_temperature` service from Phase 1, avoiding any migration later. All four built-in ESPHome climate platforms were rejected because they implement heating control logic -- the VS300FL4 already has its own thermostat, and two control loops fighting each other is both unnecessary and potentially dangerous. A minimal custom climate class (~100-200 lines C++) that accepts a target temperature, runs the re-home button sequence, and reports the setpoint back to HA is the correct abstraction. Phase 2 adds RS-485 display reading to upgrade from open-loop to closed-loop operation.
+The recommended approach is a strict ESP32/HA responsibility split. Firmware owns sub-second real-time control (button injection, display decode, retry loop). HA owns policy, cross-device correlation, persistence, and alerting. This boundary is non-negotiable: blurring it -- such as having HA automate retries at sub-second granularity or having the ESP32 subscribe to Enphase data -- creates timing and coupling problems that research confirms are worse than the failure modes they solve. The key stack additions are: retry logic in C++ inside `ButtonInjector`, two new ESPHome sensor entities surfacing injection result and attempt count, HA template sensors for power-derived heater state and mismatch detection, and a Python REST API export script. No new infrastructure (no InfluxDB, no MQTT broker, no external DB) is introduced.
 
-The principal risks are hardware-level: analog noise on button lines causing phantom presses (directly observed in testing), ESP32 boot-time GPIO glitches on strapping pins, and open-loop drift from missed or extra presses. All three are mitigated by design choices already in place -- AQY212EH photorelays for galvanic isolation, careful GPIO pin selection (GPIO 16/17/18/19 are safe), and a re-home strategy that slams to the 80F floor before counting up. Phase 2 (display reading) remains uncharted territory for the VS-series specifically, with no existing published automation for this board family -- budget extra time and treat it as active reverse engineering, not a known-pattern implementation.
+The primary risk is the non-idempotent nature of the button-press interface: every retry introduces the possibility of overshoot rather than correction. Research confirms this destroyed the auto-refresh feature in v1. The mitigation is a bounded retry design (max 2 retries, exponential backoff, press-budget enforcement) combined with a hard rule that verification never sends additional presses -- it only reads the display. A secondary risk is automation conflict: TOU and thermal runaway share the same setpoint actuator. Research recommends a graduated thermal runaway response and a "runaway cooldown" flag that TOU checks before acting, preventing the oscillation loop confirmed in production.
 
 ## Key Findings
 
 ### Recommended Stack
 
-ESPHome 2026.2.x on ESP32 WROOM-32 is the unambiguous choice for this project. ESPHome provides native Home Assistant integration (no MQTT broker required), OTA firmware updates, and a mature external component API -- all critical for a device that will live inside a tub enclosure. ESP-IDF (now the default framework in ESPHome 2026.1+) produces 40% smaller binaries and faster compile times vs. Arduino; there is no reason to override it. Home Assistant handles all TOU scheduling via standard time-trigger automations calling `climate.set_temperature`. The Python analysis tools already in the repo (pyserial, numpy) remain relevant for offline RS-485 protocol analysis in Phase 2.
+The existing stack requires no changes. Three targeted additions cover all new features. For firmware: retry logic built directly into the `ButtonInjector` state machine using chained `set_timeout` calls (ESPHome `set_retry` was deprecated 2026.2.0 and removed 2026.8.0 -- do not use it). For data: a Python `requests`-based script querying the HA REST API `/api/history/period` endpoint for operational pulls; the existing SCP+SQLite path stays as the fallback for deep historical analysis. For power monitoring: the Enphase Envoy core HA integration (already auto-discovered on LAN) provides `sensor.envoy_<SERIAL>_current_power_consumption`; no custom integration or additional hardware is needed assuming consumption CTs are installed.
 
 **Core technologies:**
-- ESPHome 2026.2.x: firmware framework and HA integration -- native API, OTA, climate entity, external components; the only serious option for ESP32+HA projects
-- ESP-IDF (default): underlying ESP32 framework -- smaller binaries, faster compiles; do not override to Arduino unless a specific component requires it
-- Custom external climate component (C++): hot tub interface -- only way to expose setpoint control as a proper HA climate entity without fighting the board's built-in thermostat
-- AQY212EH photorelays + 680R resistors: button injection circuit -- galvanic isolation between ESP32 3.3V and tub 5V analog domain; non-negotiable for noise immunity
-- Home Assistant 2026.3.x automations: TOU scheduling -- standard `climate.set_temperature` on time triggers, no extra platform needed
-- MAX485 transceiver (Phase 2): RS-485 display reading -- level shifting for synchronous clock+data bus; power from tub +5V, not ESP32 3.3V
+- `ButtonInjector` C++ (chained `set_timeout`) -- firmware retry loop -- stays within existing state machine, zero new dependencies, ~224 bytes heap cost
+- ESPHome `text_sensor` + `sensor` (2 new entities) -- surface injection result and attempt count to HA -- required for all HA-side reaction logic
+- HA template sensors (templates.yaml additions) -- power-derived heater state, mismatch detection, cross-validation -- native HA, no infrastructure added
+- `requests` + `pandas` (Python, dev machine) -- REST API export script -- formalizes existing pattern, adds `analysis` dependency group to pyproject.toml
+- Enphase Envoy core integration (already present in HA) -- whole-home power as independent heater ground truth -- zero new infrastructure, requires CT clamp hardware validation
+
+**What NOT to add (confirmed):** ESPHome `set_retry` (removed in 2026.8.0), Kalman filter on ESP32 (wrong tool for a decoded digital display), InfluxDB/TimescaleDB (unnecessary infrastructure on RPi4 SD card), MQTT bridge (ESPHome native API covers all needs), `esphome-state-machine` external component (hand-rolled state machine is simpler and already working).
 
 ### Expected Features
 
-**Must have (table stakes -- Phase 1):**
-- Set target temperature via HA climate entity -- core TOU automation path
-- Temp Up / Temp Down button simulation -- proven by manual bridging test, only viable command path
-- Re-home sequence (25x down to 80F floor, then count up) -- required for open-loop accuracy without display feedback
-- TOU schedule automation in HA -- two automations, weekday 10am and evening triggers
-- Firmware-level temperature bounds (80-104F clamp) -- safety requirement, hardware max is CPSC-mandated 104F
-- OTA firmware updates -- non-negotiable; ESP32 will be physically inaccessible once installed
-- WiFi with auto-reconnect and fallback AP -- must self-heal; missed TOU transition costs money
+**Must have (table stakes for unattended operation):**
+- Command-verify with bounded retry (ESP32) -- current fire-and-forget causes silent failures; unattended TOU requires automatic recovery
+- Command result sensors exposed to HA -- `last_result`, `success_count`, `total_count` as HA entities; prerequisite for all HA-side reaction
+- HA-side retry escalation -- if ESP32 exhausts retries, HA alerts and optionally retries once after delay; two-layer defense
+- Setpoint drift detection -- compare `detected_setpoint` vs `commanded_setpoint`; alert on mismatch; catches physical button presses and lost-press accumulation
 
-**Should have (differentiators -- Phase 2):**
-- RS-485 display reading (current temperature) -- upgrades to closed-loop; detects drift, manual overrides, board errors
-- Drift detection and auto-correction -- depends on closed-loop; eliminates accumulated error from missed presses
-- Freeze protection awareness -- parse display for ICE/OH codes; suppress automation during protection events
+**Should have (differentiators -- add after command path is stable):**
+- Enphase power as independent heater ground truth -- cross-validate display-decoded heater state with 4kW power step; catches status bit lies
+- Time-series data export script -- REST API pull replacing manual SCP+SQLite; enables systematic thermal model validation
+- Command success rate dashboard -- percentage metric with degradation alert; signals wiring wear before failures accumulate
 
-**Defer (Phase 1.5 and later):**
-- Lights/Jets control -- same circuit pattern, low effort, but not required for TOU; add after MVP proven
-- Board-powered operation (B0505S-1W DC-DC) -- USB battery is fine for prototyping
-- Energy cost tracking -- more meaningful with Phase 2 current temperature sensor
-- Community publication -- Phase 3 milestone; requires documentation and repo cleanup
-
-**Anti-features (explicitly excluded):**
-- RS-485 command injection -- no digital command channel exists; analog injection is the proven, safe path
-- PID control on ESP32 -- tub board has its own thermostat; second control loop would fight it
-- Cloud connectivity, mobile app, geofencing, ML prediction -- all overkill for a fixed TOU schedule; HA already provides mobile access
+**Defer (v2+):**
+- Thermal model seasonal calibration (outdoor temp correlation) -- needs a full season of data; defer to summer/fall 2026
+- Dual-source thermal runaway (Enphase + display heater bit) -- defer until power monitoring is validated for several weeks
+- Community protocol publication -- high value but orthogonal to closed-loop trust milestone
 
 ### Architecture Approach
 
-The system is a bridge pattern: ESP32 + ESPHome sits between HA and the VS300FL4, translating climate commands into analog button presses (write path) and, in Phase 2, RS-485 display data into temperature readings (read path). The hot tub board is completely unmodified and unaware of the ESP32. The write path and read path are independent subsystems within the external component, meaning Phase 1 delivers full functionality without any Phase 2 code in place. This separation is a deliberate design choice to avoid coupling proven work (button injection) with unproven work (protocol decoding).
+The architecture is a three-tier pipeline: (1) ESP32 firmware handles all real-time hardware interaction and publishes raw state; (2) HA template sensors and automations perform cross-device correlation and policy; (3) Python scripts on the dev Mac handle batch analysis. New features extend each tier at bounded points without reorganizing the tier boundaries. The key architectural decision -- confirmed by research -- is that retry logic belongs entirely in firmware because it needs sub-100ms timing coupling to the display decode pipeline, while cross-device sensor fusion (heater bit vs. power) belongs entirely in HA because the ESP32 has no access to Enphase data.
 
 **Major components:**
-1. Home Assistant -- TOU automation scheduling and climate entity display; communicates with ESP32 via ESPHome native API over WiFi
-2. ESPHome firmware (custom external climate component) -- climate entity, re-home algorithm, button press sequencing, setpoint state management; the core bridge logic
-3. GPIO output layer + photorelays -- momentary pulse generation; galvanic isolation between ESP32 3.3V and tub 5V analog domain; prevents noise coupling and ground loops
-4. RS-485 read layer (Phase 2) -- ISR-driven synchronous clock+data decoder; feeds `current_temperature` into existing climate entity without modifying the write path
-5. VS300FL4 board + VL-series panel -- completely unmodified; board reads analog button lines, panel displays temperature
-
-**Build order (dependency-driven):**
-- GPIO output config -> button press timing -> climate entity skeleton -> re-home algorithm -> HA automation (Phase 1, sequential)
-- Temperature ladder capture -> 7-segment lookup table -> RS-485 frame decoder -> `current_temperature` wired in -> verification logic (Phase 1.5 + Phase 2, sequential)
-- Parameterize config -> documentation -> publish (Phase 3)
+1. `ButtonInjector` (ESP32 C++) -- add `retry_count_`, `max_retries_`, `RETRY_EXHAUSTED` result type; modify `finish_sequence_()` to loop back to PROBING on timeout if retries remain; new `publish_result_()` method
+2. HA template sensors (`templates.yaml`) -- layer 1: `binary_sensor.hot_tub_heater_power` (Enphase threshold); layer 2: `binary_sensor.hot_tub_heater_mismatch` (display vs power disagreement >2 min); layer 3: `binary_sensor.hot_tub_display_stale` (data age watchdog)
+3. `command_monitor.yaml` (HA automation, new) -- trigger on `injection_result` text sensor state change; alert on retry_exhausted; optional escalation re-attempt
+4. `pull_ha_history.py` (Python, dev Mac, new) -- REST API pull of recent entity history; outputs CSV for analysis
+5. `analyze_heating.py` (existing, modify) -- add REST API JSON input path alongside existing SQLite path
 
 ### Critical Pitfalls
 
-1. **Phantom presses from analog noise on button lines** -- use AQY212EH photorelays (already designed in), keep wiring <6 inches, add 100nF caps on button lines; this was directly observed during this project's initial testing with an unterminated breakout cable
-2. **Boot-time GPIO glitches on strapping pins** -- assign photorelay outputs to GPIO 16, 17, 18, 19 only (never GPIO 0, 2, 5, 12, 15); verify with logic analyzer before connecting photorelays; consider hardware enable gate
-3. **Open-loop drift from missed or extra presses** -- empirically characterize timing in Task 3 (this is a gate, not optional); use 2x safety margins on all timing parameters; always run full re-home, never incremental adjustments
-4. **Interfering with Balboa safety systems** -- firmware clamp to 80-104F range is mandatory; add outdoor temperature weather gate in HA automation (skip transitions when ambient < 35F); parse OH/ICE display codes in Phase 2
-5. **WiFi disconnects causing missed TOU transitions** -- set `power_save_mode: none`, use static IP, implement `on_disconnect` fallback behavior; measure signal strength at tub location before deploying permanently
+1. **Non-idempotent retry causing setpoint overshoot (Pitfall 5)** -- verification failure can mean "press didn't land" OR "display in mode transition." Retrying on a mode-transition failure causes all retries to land when display normalizes, overshooting the target. Prevention: separate "command failed" from "verify inconclusive." Only retry when display is confirmed in temperature mode. Cap at 2 retries (3 total attempts). Enforce press budget: max N+2 presses for an N-degree delta.
+
+2. **TOU and thermal runaway fighting each other (Pitfall 2)** -- runaway fires, drops setpoint to 80, user re-enables TOU, TOU raises back to 104, runaway fires again. Confirmed in production (4 events in 2 days). Prevention: graduated runaway response (log-only for small overshoot, partial reduction before nuclear floor); `input_boolean.runaway_cooldown` flag that TOU checks before raising setpoint; separate thermal coast-down from actual runaway (extend verify window beyond 5 min).
+
+3. **Heater status bit unreliable as ground truth (Pitfall 3)** -- VS300FL4 heater bit reflects controller intent, not relay state; observed heating at 80F setpoint while bit reports "off." Prevention: use Enphase power and temperature derivative as corroborating signals; never gate safety actions on status bit alone; use 2-of-3 voting (power, bit, temp derivative) for heater-state decisions.
+
+4. **Silent safety automation failure (Pitfall 4)** -- thermal runaway automation works once at deployment, silently breaks months later after HA update or entity rename; user retains false confidence. Prevention: weekly safety heartbeat test validating the trigger chain without executing the action; watchdog automation monitoring runaway enablement state; re-verify after every HA or firmware update.
+
+5. **Stale ESPHome data appearing valid (Pitfall 6)** -- ESP32 disconnects; HA shows last-known value for up to 15 min (API reboot_timeout); template sensors compute with stale data; thermal runaway doesn't fire because stale value is in-range. Prevention: add data-age sensor; reduce API reboot_timeout from 15 to 5 min; add staleness check in safety conditions.
 
 ## Implications for Roadmap
 
-The phase structure is already well-defined by hardware dependencies and the open-loop vs. closed-loop distinction. Three phases, with one intermediate capture step, are the right decomposition.
+Based on research, suggested phase structure:
 
-### Phase 1: Button Injection MVP (Open-Loop)
+### Phase 1: Firmware Retry Loop
+**Rationale:** All other features observe or depend on the injection result sensors this phase exposes. Nothing in HA can react to command outcomes until firmware publishes them. This is the single bottleneck dependency for all subsequent phases.
+**Delivers:** `ButtonInjector` with bounded retry (max 2, exponential backoff), `RETRY_EXHAUSTED` result type, two new HA entities (`injection_result` text sensor, `injection_attempts` sensor), press-budget enforcement.
+**Addresses:** Command-verify bounded retry (table stakes), command result sensors to HA (table stakes).
+**Avoids:** Pitfall 1 (net-zero press pairs), Pitfall 5 (retry storm) -- by separating verify-inconclusive from command-failed and enforcing press budget.
 
-**Rationale:** The write path is fully proven (manual bridging test), hardware is arriving, and display reading is not required for TOU automation to function. This phase delivers the core value proposition. Firmware can be written and compiled ahead of parts arrival.
+### Phase 2: HA Command Monitoring and Escalation
+**Rationale:** Depends directly on Phase 1 (requires injection_result sensor). Once firmware publishes results, HA closes the loop with alerting and optional escalation retry.
+**Delivers:** `command_monitor.yaml` automation reacting to retry-exhausted events; persistent notification on failure; optional 5-minute-delayed HA-level re-attempt; setpoint drift detection alert comparing commanded vs detected setpoint.
+**Addresses:** HA-side retry escalation (table stakes), setpoint drift detection (table stakes).
+**Avoids:** Pitfall 11 (new automation behind feature flag for rollback without firmware reflash).
 
-**Delivers:** Working ESPHome firmware with custom climate entity, functional re-home sequence, HA TOU automations running on schedule, empirically validated button timing parameters.
+### Phase 3: Enphase Power Validation
+**Rationale:** Independent of Phases 1-2 (can be built in parallel), but intentionally deferred until after command path is stable per FEATURES.md. A heater mismatch alert is only actionable when command reliability is proven. Requires identifying actual Enphase entity ID before template sensors can be written.
+**Delivers:** `binary_sensor.hot_tub_heater_power` (threshold-based), `binary_sensor.hot_tub_heater_mismatch` (disagree >2 min), `input_number.home_baseline_watts` helper, mismatch alert automation.
+**Uses:** Enphase Envoy core HA integration (already present), HA template sensors.
+**Avoids:** Pitfall 3 (heater bit lies), Pitfall 7 (power false positives -- mitigated by using power as corroborating signal with 2-of-3 voting, not sole source).
 
-**Addresses:** Set target temperature, button simulation, re-home, TOU automation, OTA, WiFi, safety bounds (all table stakes features).
+### Phase 4: Data Export Pipeline
+**Rationale:** Independent of all firmware changes. Enables systematic validation of Phases 1-3 by making it easy to pull and analyze command success rates, heater correlation, and thermal model accuracy from the dev machine.
+**Delivers:** `scripts/pull_ha_history.py` (REST API pull, CSV output); updated `analyze_heating.py` accepting REST API JSON input; `analysis` dependency group in `pyproject.toml`; HA recorder configured for 30-day hot-tub entity retention.
+**Uses:** `requests` >=2.32.5, `pandas` >=2.3.0, HA REST API `/api/history/period`.
+**Avoids:** Pitfall 8 (DB bloat -- REST API pull adds no recorder writes), Pitfall 12 (DB access friction -- REST API eliminates SQLite file copy for routine checks).
 
-**Avoids:** Boot-time GPIO glitches (safe pin selection, Task 1), analog noise (photorelay circuit, Task 2), timing drift (empirical characterization, Task 3), safety system interference (weather gate, Task 4), race conditions in re-home sequence (script mode: single, global flag).
+### Phase 5: Observability Dashboard
+**Rationale:** After Phases 1-4, all data exists but may not be surfaced clearly. This phase makes system health visible and adds the safety heartbeat test that Pitfall 4 requires.
+**Delivers:** Dashboard panel showing command success rate percentage, ESP32 free heap, data age sensor, heater agreement metric; weekly safety heartbeat automation for thermal runaway validation; watchdog automation monitoring runaway enablement state.
+**Addresses:** Command success rate dashboard (should-have), Pitfall 4 (silent safety failure), Pitfall 6 (stale data visibility).
+**Avoids:** Pitfall 8 (diagnostic sensors excluded from recorder where history is not needed).
 
-### Phase 1.5: Temperature Ladder Capture (Phase 2 Prerequisite)
-
-**Rationale:** Phase 2 is hard-blocked on this. The 72 unresolved 7-segment byte mappings cannot be decoded without a controlled capture at known temperatures. This is a physical hardware task that must precede any Phase 2 firmware development.
-
-**Delivers:** Complete 7-segment lookup table, committed capture files with descriptive names, CAPTURES_INDEX.md.
-
-**Addresses:** Prerequisite for current temperature display, drift detection, freeze protection awareness.
-
-**Avoids:** The data overwrite pitfall -- use CAPTURES_INDEX.md, date-stamped filenames, immediate git commit after each capture.
-
-### Phase 2: Closed-Loop Display Reading
-
-**Rationale:** RS-485 display reading upgrades from open-loop (trust the press counter) to closed-loop (verify against actual display). This eliminates drift errors and enables drift detection, manual override recovery, and freeze protection parsing. It is the hardest phase -- the VS300FL4 synchronous clock+data protocol has no published documentation. Treat it as active reverse engineering.
-
-**Delivers:** `current_temperature` populated in the HA climate entity, drift detection logic, error code parsing (OH/ICE), full thermostat card with current + target temperature.
-
-**Addresses:** Display stream decoding, current temperature, drift detection/correction, freeze protection awareness.
-
-**Avoids:** Polling anti-pattern (must use ISR-driven clock-edge reading, not timer polling), MAX485 voltage mismatch (level shifter or voltage divider on RO pin), monolithic firmware (extend existing external component, do not rewrite).
-
-### Phase 3: Community Release
-
-**Rationale:** Publishing the first working VS-series automation is an explicit project goal. This phase polishes the implementation for public consumption with fully parameterized YAML config, protocol documentation with supporting capture files, and wiring diagrams.
-
-**Delivers:** Published ESPHome external component, protocol documentation with empirical evidence, wiring guide, setup instructions.
-
-**Addresses:** First published VS-series automation milestone.
-
-**Avoids:** Publishing unverified protocol documentation -- all claims must be backed by capture data.
+### Phase 6: Thermal Runaway Hardening
+**Rationale:** The existing thermal runaway automation has a confirmed oscillation problem (Pitfall 2, 4 events in 2 days in production). Defer until Phase 5 provides visibility into actual runaway trigger frequency so graduated thresholds are data-driven, not guessed. This phase modifies working safety logic and requires the most careful testing.
+**Delivers:** Graduated runaway response (log-only / partial drop / nuclear floor); `input_boolean.runaway_cooldown` flag wired into TOU automation; extended thermal coast-down tolerance window; automation watchdog as per Phase 5.
+**Addresses:** Pitfall 2 (TOU/runaway oscillation), Pitfall 4 (silent safety failure -- watchdog component).
+**Avoids:** Disabling safety net under false-positive pressure.
 
 ### Phase Ordering Rationale
 
-- Phase 1 before Phase 2: Write path is independent of read path. TOU value can be delivered immediately without waiting for protocol reverse engineering.
-- Phase 1.5 before Phase 2: Display decoding is gated on the lookup table, which is gated on physical ladder capture. Hardware dependency, not resolvable in software.
-- Phase 2 before Phase 3: Community publication requires a complete, verified, reliable implementation.
-- Re-home on every setpoint change throughout Phase 1: Bounds worst-case drift to one sequence and prevents accumulation. The 15-30 second cost per TOU transition is acceptable.
+- Phases 1 and 2 are strictly sequential: HA cannot react to injection outcomes before firmware publishes them.
+- Phases 3, 4, and 5 can proceed in parallel after Phase 1 is deployed and soak-tested (48-hour minimum per Pitfall 11 guidance).
+- Phase 3 is intentionally placed after command reliability (Phases 1-2): a heater mismatch alert is noise if the command path itself is unreliable.
+- Phase 6 is last because it modifies working safety logic; it needs Phase 5's visibility to set graduated thresholds from real data, not assumptions.
 
 ### Research Flags
 
-Phases needing deeper research during planning:
-- **Phase 2:** VS-series RS-485 protocol is partially characterized but not fully specified. Frame sync pattern, state machine, and status flag byte positions need empirical resolution during and after the ladder capture. The MagnusPer/GS510SZ source is a reference, not a specification -- the VS300FL4 frame structure may differ.
+Phases likely needing deeper research during planning:
+- **Phase 3 (Enphase Power Validation):** Enphase entity ID depends on specific Envoy serial number and CT configuration. Must verify actual entity names in HA Developer Tools before writing template sensors. Also confirm consumption CT clamps are physically installed (production-only installations require CTs; solar-only installations lack them).
+- **Phase 6 (Thermal Runaway Hardening):** Optimal graduated response thresholds (2F vs 4F vs 6F, 5 min vs 15 min vs 20 min windows) need real production data to tune. Do not define these values in planning -- measure from Phase 4/5 data first.
 
-Phases with standard patterns (skip additional research):
-- **Phase 1:** ESPHome external component pattern is well-documented (ESP-IQ2020, esphome-balboa-spa as direct references), button injection circuit is validated, re-home strategy is designed. Stack is fully specified.
-- **Phase 1.5:** Capture methodology is established (Python scripts exist). Operational task, not exploratory.
-- **Phase 3:** OSS publication is standard practice. No domain-specific research gaps.
+Phases with standard patterns (skip research-phase):
+- **Phase 1 (Firmware Retry):** Pattern fully specified in STACK.md and ARCHITECTURE.md. C++ changes are bounded and well-understood. No novel patterns.
+- **Phase 2 (HA Command Monitoring):** Standard HA state-trigger automation with persistent notification action. No novel patterns.
+- **Phase 4 (Data Export):** HA REST API is well-documented; Python pattern is already proven in `analyze_heating.py`.
+- **Phase 5 (Observability Dashboard):** Standard HA template sensors and dashboard cards.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | All technology choices verified against official ESPHome docs and working reference projects. ESP-IDF default, external component pattern, climate entity abstraction all confirmed. |
-| Features | HIGH | Feature set tightly scoped to TOU optimization. Table stakes validated by existing proof-of-concept. Anti-features clearly justified. |
-| Architecture | HIGH | Bridge pattern well-precedented in Balboa community (GS510SZ, esphome-balboa-spa). Component boundaries and data flow are clean. Build order is dependency-correct. |
-| Pitfalls (Phase 1) | HIGH | Most Phase 1 pitfalls are directly observed or extensively documented. GPIO strapping behavior, WiFi instability, and analog noise are all confirmed community knowledge. |
-| Pitfalls (Phase 2) | MEDIUM | Protocol reverse engineering has inherent uncertainty. The VS-series frame structure differences from GS-series are unknown until empirically characterized. |
+| Stack | HIGH | All additions verified against official ESPHome and HA docs. `set_retry` deprecation confirmed against official ESPHome developer blog (2026-02-12). Enphase entity patterns from official integration docs. |
+| Features | MEDIUM-HIGH | Table stakes features derived from concrete failure modes already observed in production. Differentiators from well-established embedded control patterns. |
+| Architecture | HIGH | ESP32/HA responsibility boundary is well-reasoned with specific anti-patterns confirmed by production failures (auto-refresh drift, runaway oscillation). Component-level change list is fully specified. |
+| Pitfalls | HIGH | Top pitfalls are documented production failures (auto-refresh drift, runaway oscillation, heater bit unreliability confirmed in STATE.md), not speculative risks. |
 
-**Overall confidence:** HIGH for Phase 1. MEDIUM for Phase 2 (protocol reverse engineering has irreducible uncertainty until ladder capture is complete).
+**Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **Button timing parameters:** Minimum press duration, inter-press gap, and auto-repeat threshold for the VS300FL4 are undocumented. Must be empirically measured during Phase 1 Task 3. Starting values (500ms press, 400ms gap) are conservative estimates, not validated.
-- **Photorelay on-resistance adequacy:** AQY212EH's 25 ohm on-resistance may or may not be sufficient to trigger the board's button detection threshold. The internal pull-down impedance is unknown. Resolve with multimeter during Phase 1 Task 2 breadboard testing.
-- **VS300FL4 display frame structure:** Full frame sync pattern, state machine, and byte positions are not yet characterized. The 72 unresolved 7-segment mappings are the primary Phase 2 unknown. The temperature ladder capture is the only resolution path.
-- **WiFi signal strength at installation site:** ESP32 reliability at the physical tub location is unknown. Must be measured before committing to a permanent installation. May require a range extender or dedicated access point.
-- **Board rate-limiting / auto-repeat behavior:** Whether holding a button triggers auto-repeat (and at what duration) is unknown. This affects whether the re-home sequence can be optimized by holding rather than pulsing.
+- **Enphase CT clamp installation:** Research assumes consumption CTs are installed. If they are not, Phase 3 is blocked until hardware is added. Verify before Phase 3 planning begins.
+- **Enphase entity ID:** Entity name `sensor.envoy_<SERIAL>_current_power_consumption` requires actual serial number. Check HA Developer Tools > States and search "envoy" before Phase 3 implementation.
+- **ESP32 actual free heap:** STACK.md estimates ~100-150KB free; ARCHITECTURE.md cites ~54KB used of 320KB total. These are estimates. Use ESPHome `debug` component to measure actual free heap on the deployed unit before Phase 1 deployment.
+- **HA recorder retention policy:** REST API data pull is limited to recorder's `purge_keep_days` window. Confirm current setting and configure to 30 days for hot-tub entities before Phase 4 implementation.
+- **Enphase polling frequency:** Official docs state 60-second poll interval. Community reports suggest configurable to 5s via HACS custom integration. For Phase 3 power correlation, the 60-second resolution is likely sufficient (heater cycles are 10-60 minutes); validate before investing in a faster polling setup.
+- **Thermal coast-down duration:** How many minutes does water temperature continue rising after the Balboa controller de-energizes the heater? This is the key input for Phase 6 graduated threshold design. Measure via Phase 4 data export before setting thresholds.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- ESPHome official docs (esphome.io): ESP32 platform, climate component, external components, GPIO output, OTA, security best practices
-- Home Assistant developer docs (developers.home-assistant.io): climate entity specification
-- ESP-IDF official docs (Espressif): GPIO interrupts, strapping pin behavior
-- ESPHome 2026.1.0 changelog: ESP-IDF default transition
-- ESPHome 2026.2.0 changelog: compile improvements
+- Home Assistant REST API (developers.home-assistant.io) -- history/period endpoint, auth, params, minimal_response flag
+- Enphase Envoy Integration (home-assistant.io/integrations/enphase_envoy) -- entity patterns, CT requirements, firmware versions
+- ESPHome Sensor Component (esphome.io/components/sensor) -- filter catalog, binary sensor debounce patterns
+- ESPHome `set_retry` Deprecation (developers.esphome.io blog, 2026-02-12) -- deprecated 2026.2.0, removed 2026.8.0
+- ESPHome Native API Component (esphome.io/components/api) -- bidirectional push architecture, no MQTT needed
+- ESP-IDF Memory Types (docs.espressif.com) -- ESP32 SRAM layout
+- Project files: `ha/thermal_runaway.yaml`, `ha/tou_automation.yaml`, `.planning/STATE.md`, `.planning/PROJECT.md` -- confirmed production failures (auto-refresh drift, runaway oscillation, heater bit unreliability)
 
 ### Secondary (MEDIUM confidence)
-- MagnusPer/Balboa-GS510SZ (GitHub): closest architectural reference for synchronous clock+data protocol; GS-series, not VS-series -- treat as reference, not specification
-- brianfeucht/esphome-balboa-spa (GitHub): best ESPHome external component structure for spa control
-- Ylianst/ESP-IQ2020 (GitHub): high-quality ESPHome external component pattern for different spa brand
-- ESPHome GitHub issues (#3094, #1237, #1196, #3885, #5025): GPIO boot behavior, WiFi stability, race conditions
-- HA Community Balboa automation thread: community experience with Balboa automation
+- IEC 61508 Overview and LDRA Guide -- functional safety principles applied as coding discipline
+- CNStra Error Handling in State Machines -- bounded retry with exponential backoff pattern
+- HA Community: Long-Term Statistics REST API -- confirms REST API limited to short-term recorder window
+- Automating a Hot Tub with HA (bentasker.co.uk) -- stale data, overlapping automation conflicts
+- HA Community: Appliance Power Monitor Blueprint -- power threshold detection with delay_on/delay_off pattern
+- Archimetric: State Machine Diagrams for IoT -- request-response with ACK/NACK/retry
 
-### Tertiary (supporting / contextual)
-- Random Nerd Tutorials ESP32 pinout reference: GPIO safety classification
-- espboards.dev strapping pins guide: boot-time GPIO behavior
-- Leslie's Pool error code docs: OH/OHH/ICE definitions
-- SpaGuts freeze protection docs: 45F trigger threshold documentation
-- Project captures and analysis: 485/rs485-status-2026-03-08.md, 485/scripts/decode_7seg.py
+### Tertiary (LOW confidence -- needs validation)
+- Enphase polling frequency configurable below 60s (community reports, not in official docs)
+- HA REST API hard limit at 10 days (community reports vary 3-10 days depending on recorder config)
+- Exact free heap on deployed ESP32 with current firmware (estimated, not measured on device)
 
 ---
-*Research completed: 2026-03-13*
+*Research completed: 2026-04-12*
 *Ready for roadmap: yes*
