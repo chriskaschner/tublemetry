@@ -1,0 +1,58 @@
+# Setpoint Drift Detection
+#
+# Detects when the display-detected setpoint disagrees with the commanded
+# setpoint for more than 2 minutes while the injection system is idle.
+# This indicates a physical button press changed the setpoint outside of
+# HA control, or an injection sequence failed to reach the target.
+#
+# Response: log warning and persistent notification. No auto-correction.
+# User decides what to do (per D-09).
+#
+# Gating: only evaluates when injection_phase is "idle" to prevent false
+# alerts during active button sequences (per D-10).
+
+alias: Hot Tub Setpoint Drift Detection
+description: >
+  Detects when detected setpoint disagrees with commanded setpoint for
+  more than 2 minutes while injection is idle. Fires persistent notification.
+mode: single
+
+trigger:
+  - platform: template
+    value_template: >
+      {{ states('sensor.tublemetry_hot_tub_detected_setpoint') | float(0) !=
+         states('number.tublemetry_hot_tub_setpoint') | float(0)
+         and states('text_sensor.tublemetry_hot_tub_injection_phase') == 'idle' }}
+    for:
+      minutes: 2
+
+condition:
+  - condition: template
+    value_template: >
+      {{ states('sensor.tublemetry_hot_tub_detected_setpoint') not in ['unknown', 'unavailable']
+         and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable']
+         and states('text_sensor.tublemetry_hot_tub_injection_phase') not in ['unknown', 'unavailable'] }}
+
+action:
+  - action: system_log.write
+    data:
+      message: >
+        SETPOINT DRIFT: detected {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F
+        != commanded {{ states('number.tublemetry_hot_tub_setpoint') }}F
+        (idle for >2 min). Last result: {{ states('text_sensor.tublemetry_hot_tub_last_command_result') }}.
+      level: warning
+      logger: tubtron.drift_detection
+
+  - action: persistent_notification.create
+    data:
+      title: "SETPOINT DRIFT - Hot Tub"
+      message: >
+        Detected setpoint {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F
+        does not match commanded {{ states('number.tublemetry_hot_tub_setpoint') }}F.
+        Mismatch sustained for >2 minutes while injection is idle.
+
+        Last command result: {{ states('text_sensor.tublemetry_hot_tub_last_command_result') }}
+        Retry count: {{ states('sensor.tublemetry_hot_tub_retry_count') }}
+
+        Check the hot tub display manually.
+      notification_id: setpoint_drift
