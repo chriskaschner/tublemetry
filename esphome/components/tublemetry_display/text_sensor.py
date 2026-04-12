@@ -6,14 +6,17 @@ Exposes diagnostic text sensors:
   - display_state: display state classification (e.g. "temperature", "OH")
   - digit_values: per-digit breakdown (e.g. "8|?|7|1| |?|7| ")
   - last_update: ISO 8601 timestamp of last display frame processed
+  - last_command_result: injection result (none/success/timeout/failed/budget_exceeded)
+  - injection_phase: injection state machine phase (idle/probing/adjusting/verifying/retrying/cooldown)
 """
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text_sensor
 from esphome.const import ENTITY_CATEGORY_DIAGNOSTIC
+from esphome.core import ID
 
-from . import TublemetryDisplay
+from . import TublemetryDisplay, INJECTOR_ID, ButtonInjector
 
 CONF_TUBLEMETRY_ID = "tublemetry_id"
 CONF_DISPLAY_STRING = "display_string"
@@ -22,6 +25,8 @@ CONF_DISPLAY_STATE = "display_state"
 CONF_DIGIT_VALUES = "digit_values"
 CONF_LAST_UPDATE = "last_update"
 CONF_VERSION = "version"
+CONF_LAST_COMMAND_RESULT = "last_command_result"
+CONF_INJECTION_PHASE = "injection_phase"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -48,6 +53,14 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_VERSION): text_sensor.text_sensor_schema(
             icon="mdi:tag",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_LAST_COMMAND_RESULT): text_sensor.text_sensor_schema(
+            icon="mdi:check-circle-outline",
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_INJECTION_PHASE): text_sensor.text_sensor_schema(
+            icon="mdi:state-machine",
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
     }
@@ -80,3 +93,18 @@ async def to_code(config):
     if conf := config.get(CONF_VERSION):
         sens = await text_sensor.new_text_sensor(conf)
         cg.add(parent.set_version_sensor(sens))
+
+    # Injector sensors (registered on ButtonInjector, not TublemetryDisplay)
+    try:
+        injector_id = ID(INJECTOR_ID, is_declaration=False, type=ButtonInjector)
+        injector = await cg.get_variable(injector_id)
+
+        if conf := config.get(CONF_LAST_COMMAND_RESULT):
+            sens = await text_sensor.new_text_sensor(conf)
+            cg.add(injector.set_last_command_result_sensor(sens))
+
+        if conf := config.get(CONF_INJECTION_PHASE):
+            sens = await text_sensor.new_text_sensor(conf)
+            cg.add(injector.set_injection_phase_sensor(sens))
+    except Exception:
+        pass  # No injector configured (read-only mode)

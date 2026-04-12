@@ -44,6 +44,7 @@ async def to_code(config):
         try:
             injector = await cg.get_variable(injector_id)
             cg.add(var.set_button_injector(injector))
+            cg.add(injector.set_setpoint_number(var))
         except Exception:
             pass
         cg.add(parent.set_setpoint_number(var))

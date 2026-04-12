@@ -126,6 +126,9 @@ sensor:
         - delta: 1.0
     detected_setpoint:
       name: "Hot Tub Detected Setpoint"
+    retry_count:
+      name: "Hot Tub Retry Count"
+      entity_category: "diagnostic"
 
 # --- Number Entities ---
 number:
@@ -169,6 +172,12 @@ text_sensor:
       entity_category: "diagnostic"
     version:
       name: "Hot Tub Component Version"
+      entity_category: "diagnostic"
+    last_command_result:
+      name: "Hot Tub Last Command Result"
+      entity_category: "diagnostic"
+    injection_phase:
+      name: "Hot Tub Injection Phase"
       entity_category: "diagnostic"
 
 # --- External Component ---
