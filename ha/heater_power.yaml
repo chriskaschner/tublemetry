@@ -1,0 +1,33 @@
+# Enphase-Derived Heater Power Detection (PWR-01)
+#
+# Independent heater state validation via whole-home power consumption.
+# The hot tub heater draws approximately 4kW. A sustained increase above
+# 3.5kW (with debounce) indicates the heater is running.
+#
+# CONFIGURATION:
+# 1. Find your Enphase power entity in HA Developer Tools > States
+#    (search for "envoy" or "current_power_consumption")
+# 2. Replace the stub state template below with:
+#      {{ states('sensor.envoy_YOUR_SERIAL_current_power_consumption') | float(0) > 3500 }}
+# 3. Adjust the 3500 threshold based on your home's baseline power draw:
+#    - If baseline is ~1kW and heater is ~4kW, threshold of 3500 works
+#    - If baseline is higher, increase threshold accordingly
+#
+# STUB BEHAVIOR (current):
+# When Enphase entity ID is not configured, this sensor always reports OFF.
+# Safety features (SAFE-01/02/03) do NOT depend on this sensor (per D-14).
+# This sensor provides independent validation only -- compare against
+# binary_sensor.tublemetry_hot_tub_heater (display status bit).
+
+template:
+  - binary_sensor:
+      - name: "Hot Tub Heater Power"
+        unique_id: hot_tub_heater_power
+        state: >
+          {{ false }}
+        icon: mdi:lightning-bolt
+        device_class: power
+        delay_on:
+          seconds: 60
+        delay_off:
+          seconds: 120
