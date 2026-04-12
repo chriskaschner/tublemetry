@@ -1,0 +1,69 @@
+# Thermal Runaway Protection
+#
+# Detects when water temperature exceeds the commanded setpoint by more than
+# OVERSHOOT_THRESHOLD for longer than SUSTAIN_MINUTES. This indicates the
+# Balboa controller is not regulating properly (heater stuck on, thermostat
+# fault, or setpoint injection mismatch).
+#
+# Response: log, notify, disable TOU schedule, drop setpoint to floor.
+# The TOU automation must be manually re-enabled after investigation.
+
+alias: Hot Tub Thermal Runaway Protection
+description: >
+  Safety automation: detects sustained overshoot above setpoint and takes
+  protective action. Drops setpoint to floor and disables TOU schedule.
+mode: single
+
+trigger:
+  - platform: template
+    value_template: >
+      {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+         states('number.tublemetry_hot_tub_setpoint') | float(999) + 2 }}
+    for:
+      minutes: 5
+
+condition:
+  # Only fire when both sensors are reporting valid numeric values
+  - condition: template
+    value_template: >
+      {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
+         and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
+
+action:
+  # 1. System log with full context
+  - action: system_log.write
+    data:
+      message: >
+        THERMAL RUNAWAY: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
+        > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 2F
+        for 5 min. Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}.
+        Dropping setpoint to 80F, disabling TOU.
+      level: warning
+      logger: tubtron.thermal_runaway
+
+  # 2. Persistent notification (survives restart, requires manual dismiss)
+  - action: persistent_notification.create
+    data:
+      title: "THERMAL RUNAWAY - Hot Tub"
+      message: >
+        Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F exceeded
+        setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >2F
+        for 5+ minutes.
+
+        Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}
+
+        Setpoint dropped to 80F. TOU schedule disabled.
+        Re-enable manually after investigation.
+      notification_id: thermal_runaway
+
+  # 3. Disable TOU so it cannot raise setpoint back up
+  - action: automation.turn_off
+    target:
+      entity_id: automation.hot_tub_tou_schedule
+
+  # 4. Drop setpoint to floor
+  - action: number.set_value
+    target:
+      entity_id: number.tublemetry_hot_tub_setpoint
+    data:
+      value: 80

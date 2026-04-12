@@ -114,7 +114,6 @@ class TublemetryDisplay : public Component {
 
   // Setpoint detection state machine
   static constexpr uint32_t SET_MODE_TIMEOUT_MS = 2000;
-  static constexpr uint32_t SET_FORCE_INTERVAL_MS = 300000;  // 5 minutes between auto-refresh triggers
   bool in_set_mode_{false};
   uint32_t last_blank_seen_ms_{0};
   float set_temp_potential_{NAN};

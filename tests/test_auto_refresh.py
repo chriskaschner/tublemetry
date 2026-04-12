@@ -1,8 +1,8 @@
-"""Tests for auto-refresh setpoint keepalive logic.
+"""Tests for ButtonInjector REFRESHING phase behavior.
 
-Two test classes:
-  TestRefreshPhase  — mirrors ButtonInjector REFRESHING phase behavior.
-  TestAutoRefresh   — mirrors TublemetryDisplay loop() auto-refresh trigger.
+The auto-refresh trigger (TublemetryDisplay loop) was removed because
+unsolicited down+up press pairs caused setpoint drift when a press was lost.
+The REFRESHING phase itself remains available for manual use.
 """
 
 import math
@@ -39,49 +39,6 @@ class RefreshStateMachine:
         self.busy = False
         return True
 
-
-# ---------------------------------------------------------------------------
-# Mirrors TublemetryDisplay loop() auto-refresh trigger
-# ---------------------------------------------------------------------------
-
-SET_FORCE_INTERVAL_MS = 300_000  # 5 minutes
-
-
-class AutoRefreshController:
-    """Python mirror of the auto-refresh guard in TublemetryDisplay::loop().
-
-    tick() mirrors the needs_refresh calculation and refresh() call.
-    """
-
-    def __init__(self):
-        self.detected_setpoint = float('nan')
-        self.last_setpoint_capture_ms = 0
-        self.refresh_calls = 0
-
-    def on_setpoint_confirmed(self, value, now_ms):
-        """Mirror classify_display_state_() confirmation block."""
-        self.detected_setpoint = value
-        self.last_setpoint_capture_ms = now_ms
-
-    def tick(self, now_ms, injector_busy=False):
-        """Mirror the auto-refresh guard in loop().
-
-        Returns True if refresh() would be called, False otherwise.
-        """
-        needs_refresh = (
-            math.isnan(self.detected_setpoint) or
-            (self.last_setpoint_capture_ms > 0 and
-             now_ms - self.last_setpoint_capture_ms >= SET_FORCE_INTERVAL_MS)
-        )
-        if needs_refresh and not injector_busy:
-            self.refresh_calls += 1
-            return True
-        return False
-
-
-# ---------------------------------------------------------------------------
-# TestRefreshPhase
-# ---------------------------------------------------------------------------
 
 class TestRefreshPhase:
     """Test the REFRESHING phase behavior mirrored by RefreshStateMachine."""
@@ -134,86 +91,3 @@ class TestRefreshPhase:
         assert sm.press_log == ['down', 'up', 'down', 'up']
 
 
-# ---------------------------------------------------------------------------
-# TestAutoRefresh
-# ---------------------------------------------------------------------------
-
-class TestAutoRefresh:
-    """Test the auto-refresh trigger logic mirrored by AutoRefreshController."""
-
-    def test_refresh_triggered_on_nan_setpoint(self):
-        """With detected_setpoint=NaN, needs_refresh=True and refresh fires."""
-        ctrl = AutoRefreshController()
-        # detected_setpoint is NaN by default
-        fired = ctrl.tick(now_ms=1000)
-        assert fired is True
-        assert ctrl.refresh_calls == 1
-
-    def test_refresh_triggered_after_interval(self):
-        """300s after last capture, needs_refresh=True."""
-        ctrl = AutoRefreshController()
-        ctrl.on_setpoint_confirmed(100.0, now_ms=100)
-        # Exactly SET_FORCE_INTERVAL_MS elapsed
-        fired = ctrl.tick(now_ms=100 + SET_FORCE_INTERVAL_MS)
-        assert fired is True
-        assert ctrl.refresh_calls == 1
-
-    def test_refresh_not_triggered_before_interval(self):
-        """200s after last capture, needs_refresh=False."""
-        ctrl = AutoRefreshController()
-        ctrl.on_setpoint_confirmed(100.0, now_ms=100)
-        fired = ctrl.tick(now_ms=100 + 200_000)  # 200s, less than 300s
-        assert fired is False
-        assert ctrl.refresh_calls == 0
-
-    def test_refresh_not_triggered_when_busy(self):
-        """injector busy → refresh() not called even when needs_refresh=True."""
-        ctrl = AutoRefreshController()
-        # NaN setpoint → needs_refresh=True, but injector is busy
-        fired = ctrl.tick(now_ms=1000, injector_busy=True)
-        assert fired is False
-        assert ctrl.refresh_calls == 0
-
-    def test_refresh_not_triggered_when_capture_ms_zero_and_setpoint_known(self):
-        """last_capture=0 with a known setpoint → needs_refresh=False.
-
-        This avoids spurious refires immediately after a fresh detection:
-        if last_setpoint_capture_ms_ is 0 but detected_setpoint_ is known,
-        the condition `last_setpoint_capture_ms_ > 0` is False, so no refresh.
-        """
-        ctrl = AutoRefreshController()
-        ctrl.detected_setpoint = 100.0
-        ctrl.last_setpoint_capture_ms = 0  # not yet stamped
-        fired = ctrl.tick(now_ms=500_000)  # very old, but capture_ms is 0
-        assert fired is False
-        assert ctrl.refresh_calls == 0
-
-    def test_last_capture_updated_on_setpoint_confirmation(self):
-        """on_setpoint_confirmed() stamps last_setpoint_capture_ms correctly."""
-        ctrl = AutoRefreshController()
-        ctrl.on_setpoint_confirmed(100.0, now_ms=12345)
-        assert ctrl.last_setpoint_capture_ms == 12345
-        assert ctrl.detected_setpoint == 100.0
-
-    def test_refresh_not_triggered_just_before_interval(self):
-        """One ms before the interval expires, no refresh fires."""
-        ctrl = AutoRefreshController()
-        ctrl.on_setpoint_confirmed(100.0, now_ms=1)  # non-zero so > 0 guard passes
-        fired = ctrl.tick(now_ms=1 + SET_FORCE_INTERVAL_MS - 1)
-        assert fired is False
-
-    def test_refresh_triggered_one_ms_after_interval(self):
-        """One ms after the interval expires, refresh fires."""
-        ctrl = AutoRefreshController()
-        ctrl.on_setpoint_confirmed(100.0, now_ms=1)  # non-zero so > 0 guard passes
-        fired = ctrl.tick(now_ms=1 + SET_FORCE_INTERVAL_MS + 1)
-        assert fired is True
-
-    def test_refresh_calls_accumulate(self):
-        """Multiple tick() calls that each need refresh accumulate refresh_calls."""
-        ctrl = AutoRefreshController()
-        # Each tick with NaN setpoint fires
-        ctrl.tick(now_ms=0)
-        ctrl.tick(now_ms=100)
-        ctrl.tick(now_ms=200)
-        assert ctrl.refresh_calls == 3

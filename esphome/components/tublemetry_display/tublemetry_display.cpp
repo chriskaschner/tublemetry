@@ -174,23 +174,6 @@ void TublemetryDisplay::loop() {
     this->injector_->loop();
   }
 
-  // Auto-refresh: fire a net-zero REFRESHING press when no setpoint has been detected yet
-  // (NaN) or when the last confirmed setpoint is older than SET_FORCE_INTERVAL_MS.
-  if (this->injector_ != nullptr && this->injector_->is_configured() && !this->injector_->is_busy()) {
-    bool needs_refresh = std::isnan(this->detected_setpoint_) ||
-        (this->last_setpoint_capture_ms_ > 0 &&
-         millis() - this->last_setpoint_capture_ms_ >= SET_FORCE_INTERVAL_MS);
-    if (needs_refresh) {
-      if (std::isnan(this->detected_setpoint_)) {
-        ESP_LOGI(TAG, "Auto-refresh: no setpoint yet -- triggering initial COOL press");
-      } else {
-        ESP_LOGI(TAG, "Auto-refresh: triggering COOL press (setpoint cache age: %lums)",
-                 (unsigned long)(millis() - this->last_setpoint_capture_ms_));
-      }
-      this->injector_->refresh();
-    }
-  }
-
   // Copy frame from ISR with interrupts disabled to prevent torn reads
   portDISABLE_INTERRUPTS();
   bool has_frame = this->isr_data_.frame_ready;
