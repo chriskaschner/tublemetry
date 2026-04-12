@@ -8,16 +8,6 @@ A hot tub automation system that controls a Balboa VS300FL4 controller via ESP32
 
 The tub automatically lowers its setpoint during on-peak hours and raises it before evening use -- no human involvement required.
 
-## Current Milestone: v2.0 Closed-Loop Trust
-
-**Goal:** Make the setpoint command path bulletproof and observable so TOU automation can run unattended without silent drift.
-
-**Target features:**
-- Command reliability: tuned press timing, retry on verification failure, success/failure surfaced to HA
-- Observable data pipeline: time-series data accessible from dev machine, not locked in HA SQLite on RPi
-- Power-based heater validation: use Enphase whole-home power monitoring as independent heater ground truth
-- Safety hardening: apply embedded safety paradigms (sensor fusion, command-verify-retry, defensive coding)
-
 ## Requirements
 
 ### Validated
@@ -27,11 +17,6 @@ The tub automatically lowers its setpoint during on-peak hours and raises it bef
 - Confirmed synchronous clock+data protocol (NOT RS-485 UART): Pin 6=clock, Pin 5=data, 24 bits/frame at 60Hz
 - Full 7-segment lookup table confirmed via ladder capture (2026-03-20): all digits 0-9, mode letters E/c/L/t/H
 - VS300FL4 uses 0x73 for "9" (no bottom segment), differs from GS510SZ reference (0x7B)
-- ESP32 reads display, injects button presses, exposes sensor+number entities to HA via ESPHome API
-- Probe+cache setpoint control (direct-delta, no sweep) with verification and timeout
-- TOU automation drafted and running (6 time triggers, weekday/weekend schedule)
-- Thermal runaway protection: detects temp > setpoint + 2F for 5 min, logs, disables TOU, drops to 80F
-- Auto-refresh (unsolicited down+up press pairs) removed -- caused setpoint drift via lost presses
 
 ### Active
 
@@ -80,27 +65,6 @@ The tub automatically lowers its setpoint during on-peak hours and raises it bef
 | AQY212EH specifically | DIP-4 package fits breadboard, 60V/500mA rating adequate, 0.2 ohm on-resistance acceptable for analog line | -- Pending |
 | 0x73 for "9" (not GS510SZ 0x7B) | VS300FL4 draws "9" without bottom segment; confirmed via ladder capture walking setpoint 95-90 | Confirmed 2026-03-20 |
 | Interrupt-driven GPIO over UART for ESPHome | Protocol is synchronous clock+data, not async UART; UART approach produces garbage | Decided, not yet implemented |
-| Number entity over climate entity | Climate entity forces F->C->F conversion chain, corrupts temperature display | Confirmed good |
-| Probe+cache over re-home sweep | Direct delta presses (e.g. 10 up for 94->104) vs 49 for re-home; user preference | Confirmed good |
-| Remove auto-refresh keepalive | Unsolicited down+up press pairs every 5 min caused setpoint drift from lost presses | Confirmed good |
-| Thermal runaway automation | Safety net: detects overshoot, logs, disables TOU, drops setpoint to floor | Confirmed good |
-
-## Evolution
-
-This document evolves at phase transitions and milestone boundaries.
-
-**After each phase transition** (via `/gsd-transition`):
-1. Requirements invalidated? -> Move to Out of Scope with reason
-2. Requirements validated? -> Move to Validated with phase reference
-3. New requirements emerged? -> Add to Active
-4. Decisions to log? -> Add to Key Decisions
-5. "What This Is" still accurate? -> Update if drifted
-
-**After each milestone** (via `/gsd-complete-milestone`):
-1. Full review of all sections
-2. Core Value check -- still the right priority?
-3. Audit Out of Scope -- reasons still valid?
-4. Update Context with current state
 
 ---
-*Last updated: 2026-04-12 after milestone v2.0 start*
+*Last updated: 2026-03-13 after initialization*

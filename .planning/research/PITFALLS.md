@@ -1,250 +1,391 @@
 # Domain Pitfalls
 
-**Domain:** Closed-loop reliability, data pipelines, and safety for embedded home automation (hot tub heater control)
-**Researched:** 2026-04-12
-**System:** Tubtron -- Balboa VS300FL4, ESP32/ESPHome, Home Assistant, 4kW/240V heater on ~300 gal hot tub
+**Domain:** Hot tub automation via ESP32 button injection (Balboa VS300FL4)
+**Researched:** 2026-03-13
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause rework, unsafe conditions, or loss of trust in the system.
+Mistakes that cause rewrites, hardware damage, or safety incidents.
 
-### Pitfall 1: The Auto-Refresh Trap -- "Net-Zero" Operations That Aren't Net-Zero
+### Pitfall 1: Phantom Button Presses from Noise Coupling on Analog Lines
 
-**What goes wrong:** You design an operation that _should_ be neutral -- press Down then Up, or Up then Down -- to keep the display alive or verify responsiveness. On an unreliable command channel (button presses that require 2-3 attempts to register), one half of the pair gets lost. The operation that was supposed to be net-zero silently becomes a +1 or -1. Over hours and days, setpoint drifts cumulatively in one direction.
+**What goes wrong:** The Balboa VS300FL4 topside panel uses analog voltage sensing for buttons -- idle ~2.3V, pressed ~4.7V (bridged to +5V). These high-impedance analog lines are extremely sensitive to noise. Any capacitive coupling, ground bounce, or EMI from nearby wiring can push the line voltage above the detection threshold, causing unintended temperature changes, jet activations, or light toggles.
 
-**Why it happens:** The fundamental error is treating a non-idempotent toggle channel as if it were idempotent. Each button press is a _relative_ mutation (increment/decrement), not an _absolute_ state-set. When the channel is lossy, relative operations accumulate errors. A pair of relative operations (down+up) only cancels out if both sides land -- which cannot be guaranteed on a channel where individual presses already fail 30-50% of the time.
-
-**Consequences:** In this project, the auto-refresh keepalive was sending down+up press pairs every 5 minutes. Lost presses caused the setpoint to drift by several degrees over hours. On a 4kW heater controlling 300 gallons of water, even a 2-degree upward drift means the heater runs an extra ~40 minutes per cycle, wasting energy and potentially approaching scalding temperatures. This was bad enough that the feature had to be entirely removed.
-
-**Prevention:**
-1. Never send "net-zero" pairs of relative operations on a lossy channel. If verification is needed, _read_ the display -- don't poke it.
-2. All setpoint commands must be _verify after write_ -- read the display value after pressing, and only consider the command successful if the readback matches the intended target.
-3. Design commands as absolute-target operations internally ("set to 104") even though the physical interface is relative (press Up N times). The internal state machine should track "current" vs "target" and only issue presses to close the gap, never speculative "maintenance" presses.
-4. If a verification read fails after a command, the correct response is to re-read (not re-press), since the press may have landed but the read was noisy.
-
-**Detection:** Monitor `setpoint` history for slow monotonic drift that doesn't correlate with TOU schedule events. If the setpoint is changing outside of TOU trigger times, something is issuing unsolicited presses.
-
-**This project's lesson (confirmed):** Auto-refresh was removed in v2.0 pre-work. The root cause was exactly this: asymmetric loss rates on the two press directions made "net-zero" operations net-positive or net-negative over time.
-
----
-
-### Pitfall 2: Automation Fighting Automation -- The TOU/Runaway Oscillation Loop
-
-**What goes wrong:** Two automations with opposing goals act on the same actuator without coordination. In this system: TOU automation raises setpoint to 104 at 7pm. Thermal runaway detects overshoot (e.g., water at 107 due to a transient read or slow heater shutoff), drops setpoint to 80, and disables TOU. Next day, user re-enables TOU, which raises back to 104, runaway fires again because the heater is still running from the previous cycle. The user gets 4 runaway alerts in 2 days and loses trust in both automations.
-
-**Why it happens:**
-- The runaway automation's only response is a nuclear option (drop to 80, disable TOU). There is no graduated response.
-- TOU automation has no awareness of whether runaway has recently fired, or why TOU was disabled.
-- The +2F/5min threshold is tight enough that normal thermal lag (heater off but water still rising from residual heat in the element and plumbing) can trigger it legitimately.
-- Re-enabling TOU is a manual action with no "cooldown awareness" -- the system doesn't know whether the root cause was resolved.
-
-**Consequences:** User disables thermal runaway protection ("too many false alarms"), removing the only automated safety net. Or user stops re-enabling TOU, defeating the entire purpose of the system. Either outcome is a loss.
-
-**Prevention:**
-1. Implement graduated response in thermal runaway: Level 1 (overshoot 2-3F for 5 min) = log + notify only. Level 2 (overshoot 4F+ or 2F+ for 15 min) = drop setpoint by 5 degrees, not to floor. Level 3 (overshoot 6F+ or sustained 20+ min) = nuclear drop to 80, disable TOU.
-2. Add a "runaway cooldown" `input_boolean` that TOU checks before raising setpoint. If runaway fired in the last 2 hours, TOU skips the raise and logs why.
-3. Separate "heater overshoot" (expected for 2-5 min after heater cycles off due to thermal mass) from "thermal runaway" (sustained, indicates actual fault). The current 5-minute window may be too short for normal thermal coast-down.
-4. Add a "last runaway timestamp" and "runaway count in 24h" sensor. If count > 2 in 24h, escalate to persistent notification requiring manual acknowledgment, not just re-enable.
-5. Consider: if thermal runaway detects genuine overshoot, the correct first action might be "hold setpoint where it is" (stop TOU from raising), not "drop to floor" (which creates a huge delta for the next cycle).
-
-**Detection:** Count `thermal_runaway` trigger events per day. More than 1 in 48 hours strongly suggests either a false-positive threshold or an automation-vs-automation loop. Check logs for "TOU re-enabled" events within 4 hours of runaway events.
-
-**This project's lesson (confirmed):** Thermal runaway fired 4 times in 2 days. Some were real (airlock causing overheating), but the response pattern -- nuclear drop, manual re-enable, immediate TOU re-raise -- created a sawtoooth that felt like a loop.
-
----
-
-### Pitfall 3: Trusting the Heater Status Bit When It Lies
-
-**What goes wrong:** The VS300FL4 reports a heater status bit via the display protocol. Code trusts this bit as ground truth for "is the heater on?" But observation shows water temperature rising while the heater bit reads "off." If safety logic or thermal model calculations depend on this bit, they will make wrong decisions: thermal model computes wrong heating rate (thinks heater is off during heating), safety logic doesn't detect actual heating events, and power consumption estimates are garbage.
-
-**Why it happens:** The heater status bit likely reflects the _controller's intent_ (whether it's calling for heat), not the physical state of the heater relay. With thermal lag, relay bounce, or timing misalignment between the display refresh cycle and the relay driver, the bit can be stale or semantically different from what it appears to mean. On a VS-series controller where all protocol knowledge is reverse-engineered, the exact semantics of each bit are uncertain.
+**Why it happens:** The VL-series panel has no microcontroller and no debounce logic. It is a purely passive device: resistor dividers set idle voltage, and button presses bridge to +5V. The control board reads these as analog thresholds. Even an unterminated Cat5 breakout cable caused phantom Temp Up presses during this project's initial testing -- documented in `485/rs485-status-2026-03-08.md`.
 
 **Consequences:**
-- Cooling rate calculation in `sensors.yaml` uses heater "off" windows. If heater is actually on during some "off" windows, cooling rate is underestimated (calculated windows include some heating, showing less cooling than reality).
-- Heating rate calculation could similarly be corrupted if a heating event starts before the bit flips.
-- Thermal runaway detection relies on temperature vs. setpoint, not heater state directly, so it's partially insulated -- but adding heater-state-aware logic later would introduce this vulnerability.
-- Any "heater runtime" tracking for energy cost estimation would be wrong.
+- Temperature silently drifts up or down without user knowledge
+- Jets or heater activate when nobody is in the tub, increasing energy costs
+- In worst case, temperature could climb to 104F maximum during an unintended period
+- Destroys trust in the automation system, defeating the project's purpose
 
 **Prevention:**
-1. Use Enphase power monitoring as independent ground truth for heater state. A 4kW load appearing/disappearing in whole-house consumption is unambiguous (with caveats -- see Pitfall 7).
-2. If using the heater status bit at all, cross-validate: if power monitoring says 4kW draw and heater bit says "off," trust power monitoring. Log the discrepancy.
-3. For thermal model calculations, prefer temperature-derivative-based detection over status-bit-based detection. If water temp is rising at >0.1F/min, heating is likely happening regardless of what the bit says.
-4. Never gate safety actions on the heater bit. Thermal runaway should trigger on temperature vs. setpoint, not on "heater says it's on and temp is rising."
+- Use photorelays (AQY212EH) for galvanic isolation between ESP32 and button lines. This is already the design choice -- do not compromise it. Never use bare MOSFETs or analog switches without isolation.
+- Keep wiring between the RJ45 breakout and photorelays as short as physically possible (<6 inches).
+- Route button injection wires away from the RS-485 data lines (pins 5/6) and away from the 240V heater/pump wiring.
+- Verify with multimeter that photorelay off-leakage (spec: 1uA max) does not shift idle voltage enough to cross the detection threshold.
+- Add 100nF ceramic capacitors across each button line to ground at the RJ45 breakout to suppress high-frequency noise.
 
-**Detection:** Compare heater bit transitions with Enphase power spikes. If heater bit ON/OFF transitions don't correlate >90% with 4kW power steps within a 60-second window, the bit is unreliable.
+**Detection:** Unexpected temperature changes when the ESP32 is powered off or idle. Monitor RS-485 display stream (Phase 2) for temperature values that differ from the last commanded setpoint.
 
-**This project's lesson (confirmed):** User observed heating at 80F setpoint with heater status reporting "off." Documented in STATE.md as a known concern.
+**Phase:** Phase 1 (button injection MVP) -- must be validated during breadboard testing (Task 2/3).
+
+**Confidence:** HIGH -- directly observed during this project's testing.
 
 ---
 
-### Pitfall 4: Silent Safety Failure -- The Automation That Never Fires
+### Pitfall 2: ESP32 GPIO Strapping Pins Firing Photorelays During Boot/Reset
 
-**What goes wrong:** Thermal runaway protection is deployed, tested once manually, then never fires in production because conditions never arise (the system works correctly). Months later, when a real fault occurs, the automation fails because: HA updated and broke a template syntax, the entity IDs changed during a firmware update, the sensor went unavailable and the condition check filters it out, or the automation was accidentally disabled during dashboard editing.
+**What goes wrong:** During power-on, reset, or OTA update, certain ESP32 GPIO pins briefly change state (high/low pulses lasting milliseconds). If photorelay control lines are connected to strapping pins (GPIO 0, 2, 5, 12, 15) or other pins with boot-time behavior, the photorelays will actuate during every boot cycle, causing unintended button presses on the hot tub.
 
-**Why it happens:** Safety automations are by definition _rarely triggered_. Unlike TOU automation (which fires 6x/day and breaks loudly if misconfigured), thermal runaway may go months without triggering. Without periodic validation, bit rot goes undetected.
+**Why it happens:** The ESP32 uses strapping pins to determine boot mode (flash vs. normal execution). During the ~100ms boot sequence, these pins are driven to specific states by internal pull-ups/pull-downs and the bootloader. GPIO 5 and 15 are pulled HIGH during boot. GPIO 12 has an internal pull-down. Pins connected to the flash (GPIO 6-11) are completely off-limits.
 
-**Consequences:** The safety net doesn't exist when needed. User has false confidence that the system is protected. A real thermal runaway event at 3am goes undetected until morning, when water is at 115F+ and potentially dangerous.
+**Consequences:**
+- Every ESP32 reboot, OTA update, or power cycle triggers 1-3 phantom button presses
+- Temperature changes by 1-3 degrees each time the ESP32 reboots
+- With ESPHome's watchdog and WiFi reconnect behavior, reboots happen more often than expected
+- Cumulative drift makes open-loop control unreliable
 
 **Prevention:**
-1. Build a "safety heartbeat" test. Once per week (or configurable), the automation should fire a _test sequence_ that validates the entire chain: template evaluation returns true/false correctly, entity IDs resolve, notification delivery works, but stops short of actually executing the safety action. Log the test result.
-2. Add a "days since last runaway check" sensor. If > 14 days, surface a warning on the dashboard.
-3. After any HA update, ESPHome firmware update, or entity rename, manually verify thermal runaway fires by temporarily injecting a fake temperature value via Developer Tools.
-4. Use the HA automation watchdog pattern: a secondary automation that monitors whether `automation.hot_tub_thermal_runaway_protection` is enabled and alerts if it's been disabled for more than 1 hour. This catches the "accidentally turned off" failure mode.
-5. The watchdog itself needs protection -- the watchdog automation should be labeled as `watchdog_protected` and monitored by a separate mechanism (or at minimum, dashboard visibility).
+- Use only safe GPIO pins for photorelay outputs: GPIO 13, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33 are safe for output
+- Specifically avoid GPIO 0, 2, 5, 12, 15 (strapping), GPIO 6-11 (flash), GPIO 34-39 (input-only, no output driver)
+- Verify chosen pins with a logic analyzer or oscilloscope during boot before connecting to photorelays
+- Consider adding a hardware enable gate: use a "safe" GPIO to enable photorelay power only after boot completes (on_boot priority 600 in ESPHome)
 
-**Detection:** A sensor that tracks `automation.hot_tub_thermal_runaway_protection` state (on/off) with history. Any period where it's off for >1 hour without a corresponding maintenance note is suspicious. Also: if `last_triggered` for the runaway automation is >30 days ago AND the system has been running, that's either good news (no overshoot) or bad news (broken trigger).
+**Detection:** Temperature changes that correlate with ESP32 reboot events in the ESPHome log. Attach LED to photorelay output during testing and observe during power cycle.
+
+**Phase:** Phase 1 (firmware config, Task 1) -- pin selection must happen before breadboard build.
+
+**Confidence:** HIGH -- well-documented ESP32 hardware behavior, multiple community reports.
+
+**Sources:**
+- [ESP32 Strapping Pins Complete Guide](https://www.espboards.dev/blog/esp32-strapping-pins/)
+- [ESPHome GPIO switch toggles on boot issue #3094](https://github.com/esphome/issues/issues/3094)
+- [Random Nerd Tutorials ESP32 Pinout Reference](https://randomnerdtutorials.com/esp32-pinout-reference-gpios/)
+
+---
+
+### Pitfall 3: Open-Loop Temperature Drift from Missed or Extra Button Presses
+
+**What goes wrong:** The "re-home" strategy (slam 25x to floor at 80F, then count up to target) assumes every simulated button press is registered by the control board. If even one press is missed (too short, noise rejected) or double-counted (press too long, auto-repeat triggered), the final setpoint is wrong by 1F or more per missed/extra press. Over multiple TOU transitions per day, errors accumulate.
+
+**Why it happens:**
+- Button press timing parameters are unknown. The minimum press duration, inter-press gap, and auto-repeat threshold for the VS300FL4 are not documented anywhere. They must be empirically measured.
+- The photorelay has finite switching times (turn-on: ~0.5ms typical, turn-off: ~0.1ms for AQY212EH). If the firmware pulse duration is too close to the board's minimum detection threshold, some presses will be rejected.
+- If the pulse is too long (e.g., >2 seconds), the board may interpret it as a "hold" and enter auto-repeat mode, adding extra increments.
+- Manual panel interaction between automation cycles (user adjusts temp by hand) completely invalidates the assumed position.
+
+**Consequences:**
+- Target setpoint of 99F ends up at 97F or 101F
+- Error compounds across 2 TOU transitions/day = potential 2-4F drift per day
+- User discovers tub at wrong temperature, loses trust in automation
+- No feedback mechanism to detect the error in Phase 1 (open-loop)
+
+**Prevention:**
+- Task 3 (timing characterization) is the critical gate: measure minimum press duration, maximum press rate, and auto-repeat threshold with empirical testing on the actual hardware
+- Use conservative timing margins: if minimum press is measured at 100ms, use 200ms. If auto-repeat starts at 2s, cap press duration at 500ms.
+- Always run the full re-home sequence (slam to floor + count up) rather than incremental adjustments. This bounds worst-case error to a single sequence rather than accumulating across multiple sequences.
+- Add a "re-home interval" -- run the full re-home sequence before every setpoint change, not just on drift correction. The extra 15-30 seconds per transition is worth the reliability.
+- Phase 2 (display reading) eliminates this class of error entirely by providing closed-loop feedback. Prioritize it.
+
+**Detection:** In Phase 1, the only detection is manual verification (look at the tub display). In Phase 2, compare RS-485 display reading to commanded setpoint after each re-home sequence.
+
+**Phase:** Phase 1 (Task 3 timing characterization), resolved fully in Phase 2 (closed-loop).
+
+**Confidence:** HIGH -- inherent to open-loop control; the project design already acknowledges this.
+
+---
+
+### Pitfall 4: Interfering with Balboa Safety Systems (Freeze Protection, Overheat)
+
+**What goes wrong:** The Balboa VS300FL4 has built-in safety systems: overheat protection (OH/OHH codes above 108-118F), freeze protection (activates all equipment when water drops below 45F), and high-limit switch (hardware thermal cutoff). Automation that fights these systems can create dangerous or expensive situations.
+
+**Why it happens:**
+- The automation lowers temperature to 99F during on-peak hours. If ambient temperature drops and freeze protection activates while the setpoint is low, the automation might fight it by sending "temp down" presses during a freeze event.
+- The system cannot distinguish between "user changed the temp" and "board is in protection mode" without display reading.
+- Rapid setpoint changes (25 presses down, then 24 presses up) during a protection event could confuse the board's state machine.
+
+**Consequences:**
+- Freeze protection disabled or interrupted: pipes freeze, pump and heater damaged, $2000+ repair
+- Overheat protection circumvented: water exceeds safe temperature, burn hazard for humans
+- High-limit switch trips repeatedly: nuisance, potential relay damage on control board
+- The VS300FL4 is discontinued -- replacement boards are $400-800 (BP100G2 upgrade)
+
+**Prevention:**
+- Never automate during extreme weather without temperature verification (Phase 2)
+- The setpoint range is 80F-104F. The board itself prevents going above 104F or below 80F, which provides a hardware safety floor. Do not attempt to bypass this.
+- In Phase 1, add a "weather gate" to the HA automation: skip TOU transitions if outdoor temperature is below 35F (freeze risk) or above 100F (heater may be fighting ambient)
+- The re-home sequence (slam to 80F) is safe because 80F is above the 45F freeze protection threshold and below the overheat threshold
+- In Phase 2, read the display stream to detect OH/OHH/ICE error codes and suppress automation during error states
+
+**Detection:** Look for the board displaying error codes (OH, OHH, ICE) or the high-limit tripping. In Phase 2, parse the display stream for these error patterns.
+
+**Phase:** Phase 1 (HA automation, Task 4) must include weather gating. Phase 2 resolves with display reading.
+
+**Confidence:** HIGH -- Balboa freeze protection documented at 45F trigger, overheat at 108-118F.
+
+**Sources:**
+- [Spa & Hot Tub Error Codes OH/OHH/OHS](https://lesliespool.com/blog/spa-hot-tub-error-codes-oh-ohh-omg.html)
+- [Freeze Protection on Balboa Systems](https://www.spaguts.com/spagutsfaqs/support-freeze-protection-on-balboa-m7-systems)
+- [Preventing Freeze Damage](https://lesliespool.com/blog/preventing-freeze-damage-to-a-spa-or-hot-tub.html)
+
+---
+
+### Pitfall 5: ESP32 WiFi Disconnects Causing Lost Automation Commands
+
+**What goes wrong:** The ESP32 loses WiFi connectivity, Home Assistant cannot reach the device, and scheduled TOU transitions fail silently. The tub stays at whatever setpoint it was last commanded to, potentially running the 4kW heater at 104F through the entire on-peak rate period, costing the money the project was designed to save.
+
+**Why it happens:** ESP32 WiFi stability is a known pain point in the ESPHome community. Common causes:
+- Signal strength below -70dBm (hot tub is outdoors, potentially far from router)
+- Router DHCP lease expiry causing reconnect storms
+- Power save mode conflicts (ESP32 power save vs. connection keepalive)
+- Mesh network handoff delays (10+ minutes in some cases)
+- ESP32 watchdog resets triggered by WiFi stack hangs
+
+**Consequences:**
+- Missed TOU transitions -- tub heats at on-peak rates, $0.20/kWh instead of $0.05/kWh
+- Stale setpoint persists for hours until WiFi recovers or human notices
+- Multiple watchdog reboots can trigger phantom button presses (see Pitfall 2)
+- Automation appears "working" in HA dashboard (last known state) while actually disconnected
+
+**Prevention:**
+- Measure WiFi signal strength at the tub location before deploying. Need better than -65dBm for reliability.
+- In ESPHome config, set `power_save_mode: none` to prevent WiFi sleep
+- Set static IP to avoid DHCP lease issues: `use_address`, `manual_ip` in ESPHome WiFi config
+- Implement a fallback: if ESP32 loses HA connection for >30 minutes, execute a safe default (e.g., set temp to 99F as a compromise)
+- Use the `on_disconnect` trigger in ESPHome's `api:` component to log disconnects and trigger fallback behavior
+- Consider a WiFi range extender or dedicated access point near the tub
+
+**Detection:** Monitor ESPHome device uptime and connection status in Home Assistant. Set up HA notification if device goes offline for more than 10 minutes.
+
+**Phase:** Phase 1 (firmware config, Task 1; HA automation, Task 4). WiFi reliability testing during breadboard prototype.
+
+**Confidence:** HIGH -- extensively documented in ESPHome community, multiple GitHub issues.
+
+**Sources:**
+- [ESPHome disconnects constantly issue #1237](https://github.com/esphome/issues/issues/1237)
+- [ESP32 loses connection after 3h20m issue #1196](https://github.com/esphome/issues/issues/1196)
+- [Dealing with ESPHome Disconnects](https://www.thefrankes.com/wp/?p=4693)
+- [ESP32 Disconnects Randomly](https://www.espboards.dev/troubleshooting/issues/wifi/esp32-disconnects-randomly/)
 
 ---
 
 ## Moderate Pitfalls
 
-### Pitfall 5: Retry Storms on a Flaky Actuator
+### Pitfall 6: ESPHome Momentary Switch Race Conditions During Re-Home Sequence
 
-**What goes wrong:** Button press fails (doesn't register on display). Retry logic sends another press. Also fails. Logic sends 3rd, 4th, 5th press. Meanwhile, the display was in a transient state (showing "St" for standby mode instead of temperature), so _verification_ kept failing even though presses were landing. When the display returns to temperature mode, it shows the setpoint has moved +5 from target because all 5 presses actually landed, they just couldn't be verified during the transient.
+**What goes wrong:** The re-home sequence fires 25 rapid button presses (slam to floor), then counts up to target. If each press is implemented as a `switch.turn_on` with `delay` + `switch.turn_off`, concurrent HA commands or ESPHome automations can interrupt the sequence mid-execution, leaving the setpoint at an unknown intermediate value.
 
-**Why it happens:** Retry logic assumes that a failed _verification_ means the _command_ didn't land. On this system, verification failure has multiple causes: display in non-temperature mode (mode letters Ec, SL, St), decode confidence drop during frame transitions, WiFi latency delaying the readback, or genuine press failure. Retrying on all of these conflates "command didn't arrive" with "can't confirm command arrived."
+**Why it happens:** ESPHome delays are asynchronous. While a delay is running, other code continues executing. If HA sends a new setpoint command while a re-home sequence is in progress, both sequences can interleave, producing unpredictable GPIO patterns. Additionally, ESPHome's `on_turn_on` automation can enter infinite loops if the switch receives multiple rapid triggers.
 
 **Prevention:**
-1. Separate "command failed" from "verification inconclusive." If display is showing mode letters or decode confidence is low, do not retry -- wait for the display to stabilize, then verify.
-2. Cap retries strictly: max 2 retries (3 total attempts), with exponential backoff (e.g., 1s, 3s, 10s).
-3. After max retries, enter a "degraded" state: log the failure, notify, but do NOT keep pressing. The worst case for a failed setpoint change is "TOU schedule is off by 4 degrees for one cycle." The worst case for a retry storm is "setpoint slammed to 80 or 104 unexpectedly."
-4. Track the display state (temperature vs. mode) and only attempt commands when in temperature display mode. Queue commands during mode transitions.
-5. Implement a "press budget" per command: for a delta of N degrees, allow at most N+2 presses total (allowing 2 retries for lost presses). If press count exceeds budget, halt and alert.
+- Use a global boolean `is_rehoming` flag to gate all setpoint changes. Check it before starting any sequence.
+- Implement the entire re-home sequence as a single ESPHome `script:` with `mode: single` (rejects new calls while running) or `mode: restart` (cancels in-progress and starts fresh).
+- Never expose individual "Temp Up" / "Temp Down" buttons to HA -- only expose the target setpoint as a `climate` entity. The firmware should own the re-home logic entirely.
+- Use `script.wait` before issuing the count-up sequence to ensure the slam-down is complete.
 
-**Detection:** Track `total_presses_per_command` and `commands_with_retries` counters. If >30% of commands need retries, the press timing parameters need tuning, not more retries.
+**Detection:** Setpoint ends up at unexpected values after automation triggers. ESPHome logs showing overlapping script executions.
+
+**Phase:** Phase 1 (firmware config, Task 1).
+
+**Confidence:** MEDIUM -- based on ESPHome automation architecture and documented race conditions in similar patterns.
+
+**Sources:**
+- [ESPHome race condition in modbus_controller issue #3885](https://github.com/esphome/issues/issues/3885)
+- [Switch on_turn_on loop discussion](https://community.home-assistant.io/t/switch-on-turn-on-loop/761620)
+- [ESPHome delay not properly working issue #5025](https://github.com/esphome/issues/issues/5025)
 
 ---
 
-### Pitfall 6: Stale Data Masking Real Problems
+### Pitfall 7: Photorelay On-Resistance Not Low Enough to Trigger Button Detection
 
-**What goes wrong:** ESPHome sensor goes offline (WiFi disconnect, ESP32 reboot, display cable loose). HA continues showing the last known temperature value for minutes to hours. Template sensors derived from this value (preheat ETA, heating rate) keep computing with stale data. TOU automation fires and sets a setpoint based on stale temperature. Thermal runaway sees stale temp and doesn't fire because the stale value is within range, even though actual temperature may have drifted significantly.
+**What goes wrong:** The AQY212EH has 25 ohm on-resistance (per datasheet). The Balboa board's button detection circuit is a voltage divider: idle at ~2.3V, "pressed" means bridging to +5V. If the photorelay's 25 ohm series resistance drops enough voltage in the divider network that the button line doesn't reach the board's detection threshold, button presses won't register.
 
-**Why it happens:** HA's default behavior for disconnected ESPHome devices is to mark entities as `unavailable`, but this only happens after the API connection timeout (configured at 15 min in tublemetry.yaml). During that 15-minute window, values are stale but appear valid. Additionally, the `heartbeat: 30s` filter on the temperature sensor means even when connected, the value only updates every 30 seconds, which during rapid heating (0.3F/min) means up to 0.15F staleness. The SQL sensors in `sensors.yaml` refresh hourly (`scan_interval: 3600`), meaning heating/cooling rate estimates can be up to 1 hour old.
-
-**Specific risk in this system:** The `hot_tub_preheat_minutes` template uses `sensor.hot_tub_heating_rate` (hourly refresh) and `sensor.tublemetry_hot_tub_temperature` (30s heartbeat). If the heating rate changed due to seasonal temperature shifts, the preheat estimate could be 30-60 minutes wrong until the next SQL refresh.
+**Why it happens:** The board's internal pull-down resistor value on the button lines is unknown. If it is low (e.g., 1K ohm), the AQY212EH's 25 ohm is negligible (button sees ~4.95V). If the pull-down is higher impedance and the detection threshold is close to the idle voltage, the 25 ohm might matter. This is entirely dependent on the unknown internal circuit design.
 
 **Prevention:**
-1. Add a `last_update` age check to critical template sensors. If `sensor.tublemetry_hot_tub_temperature` hasn't updated in >5 minutes, treat data as stale and halt automations that depend on it.
-2. Reduce the ESPHome API `reboot_timeout` from 15 min to 5 min, so stale-but-appears-valid windows are shorter.
-3. Add a dashboard indicator showing "data age" -- the time since last successful display decode. Already partially exists (`sensor.tublemetry_hot_tub_last_update`) but needs to be surfaced prominently.
-4. Thermal runaway's condition block already checks for `unknown`/`unavailable`, but needs an additional check: if the temperature value hasn't changed in >10 minutes, treat it as suspect (water temperature in a hot tub with a running heater changes continuously).
-5. For SQL sensors, consider reducing `scan_interval` to 1800 (30 min) or triggering a refresh after TOU setpoint changes, since that's when the heating rate estimate matters most.
+- Measure with a multimeter during Task 2 (breadboard prototype): with photorelay actuated, measure voltage on the button line. Must be above the detection threshold (estimated >4.0V based on the manual test where bridging directly to +5V worked).
+- The manual proof-of-concept (bridging Pin 1 to Pin 8 directly with wire) had ~0 ohm resistance. The photorelay adds 25 ohm. If the internal pull-down is >500 ohm, this is fine (voltage will be >4.7V).
+- If 25 ohm is too much (unlikely but possible), the AQY210EH variant has 0.55 ohm on-resistance but lower voltage rating. Or use two AQY212EH outputs in parallel (12.5 ohm).
 
-**Detection:** A sensor that computes `now() - last_update_time` for the temperature entity. Alert if >5 minutes during normal operation.
+**Detection:** Button presses don't register during breadboard testing. Multimeter on button line shows voltage below expected threshold when photorelay is actuated.
+
+**Phase:** Phase 1 (Task 2, breadboard prototype).
+
+**Confidence:** LOW -- the 25 ohm is likely fine given the circuit topology, but cannot be confirmed without measurement. The existing CONCERNS.md already flags this.
 
 ---
 
-### Pitfall 7: Power Monitoring False Positives from Other 240V Loads
+### Pitfall 8: RS-485 Display Reading (Phase 2) is Harder Than Expected
 
-**What goes wrong:** Enphase whole-house power monitoring shows a 4kW spike. System concludes "heater is on." Actually, it's the clothes dryer. Or the EV charger. Or the oven. The system records a phantom heating event, corrupting the thermal model. Or worse: during a real heater-on event, the dryer also runs, showing 8kW total. System concludes "two heaters" or gets confused by the unexpected power level and marks the data as invalid, missing a real heating event.
+**What goes wrong:** The VS-series uses a synchronous clock+data protocol that is completely undocumented. The closest reference (MagnusPer/Balboa-GS510SZ for GS-series) uses a similar but not identical protocol. Assumptions about frame structure, timing, or encoding that work for the GS510SZ may not transfer to the VS300FL4, requiring fresh reverse engineering.
 
-**Why it happens:** Whole-house power monitoring via CTs at the main panel sees aggregate consumption, not per-circuit. Research on NILM (non-intrusive load monitoring) confirms that purely resistive 240V loads at similar power levels -- like a 4kW heater and a 4-5kW dryer heating element -- are essentially indistinguishable. Enphase does not do load disaggregation; it reports total consumption.
-
-**Consequences:**
-- False positive: dryer run mistakenly counted as heater run, corrupting heating rate calculation (thermal model thinks heater ran for 45 minutes but water temp didn't change, computing a heating rate near zero).
-- False negative: during concurrent loads, the "4kW step" detection gets confused by the staircase of multiple loads.
-- Seasonal variation: baseline consumption changes with HVAC load. A 4kW threshold that works in spring may have too many false positives in winter (electric heating) or summer (AC compressor).
+**Why it happens:**
+- 72 candidate 7-segment mappings remain unresolved (need physical temperature ladder capture)
+- The display multiplexing (Pin 5 fires content, Pin 6 fires refresh at 60Hz with ~400us offset) is confirmed but the full state machine is not understood
+- The Pin 5 data line carries both idle frames and button-response burst patterns, which need to be distinguished
+- The GS510SZ protocol has 42 clock pulses per cycle (39 for display + 3 for buttons). The VS300FL4 may differ.
+- No existing ESPHome custom component handles this protocol family
 
 **Prevention:**
-1. Do NOT use power as the sole heater-on signal. Use it as a _corroborating_ signal alongside the heater status bit and temperature derivative. If 2 of 3 agree, heater is on. If only power says "on" but temp is flat and heater bit is off, it's probably another appliance.
-2. Use time-of-day correlation: dryer runs are clustered during daytime human activity hours. Hot tub heater runs correlate with TOU schedule changes. An EV charger typically runs on a schedule (e.g., overnight). Context narrows the candidates.
-3. Use step detection, not threshold detection: look for a ~4kW _increase_ from baseline (not absolute level > 4kW). This survives baseline shifts but still fails on concurrent loads.
-4. If the Enphase system supports per-circuit CT monitoring (via IQ Load Controller or additional CTs), use that for the hot tub circuit specifically. This eliminates the disaggregation problem entirely. Investigate whether the hot tub's 240V circuit has a dedicated breaker that could host a CT.
-5. Accept that power monitoring will be an _approximate_ signal, not a _definitive_ one. Design the thermal model to tolerate some noise in the heater-on/heater-off signal by using rolling averages and discarding statistical outliers.
+- The temperature ladder capture (Task 5) is non-negotiable. Do it before starting any Phase 2 code.
+- Study the MagnusPer/Balboa-GS510SZ source code carefully, but treat it as a reference, not a specification. The VS300FL4 is a different board generation.
+- Plan for writing a custom ESPHome component (C++) rather than trying to use existing UART or SPI components. The synchronous clock+data protocol does not match standard UART framing.
+- Budget significant time: this is uncharted territory. No published automation exists for VS-series boards.
 
-**Detection:** Compare power-derived heater events with temperature-derivative-confirmed heater events. If <70% correlation, the power signal has too much noise to be useful as primary input.
+**Detection:** Decoded display values don't match the physical panel display. Timing misalignment causes corrupted readings. ESPHome custom component crashes or produces garbage data.
+
+**Phase:** Phase 2 (display stream decoding). Phase 1.5 (temperature ladder capture) is the prerequisite.
+
+**Confidence:** MEDIUM -- the protocol structure is partially understood from existing captures, but significant unknowns remain.
+
+**Sources:**
+- [MagnusPer/Balboa-GS510SZ](https://github.com/MagnusPer/Balboa-GS510SZ)
+- [HA Community: Writing ESPHome custom component with proprietary synchronous serial protocol](https://community.home-assistant.io/t/expert-advice-sought-writing-an-esphome-custom-component-with-a-proprietary-synchronous-serial-protocol/735070)
 
 ---
 
-### Pitfall 8: Overwhelming HA with API Calls / Database Bloat
+### Pitfall 9: Manual Panel Interaction Invalidates Automation State
 
-**What goes wrong:** Adding observability (more sensors, more frequent polling, SQL queries against the recorder DB) degrades HA performance on the RPi4. The `scan_interval: 3600` SQL sensors seem fine, but adding real-time power monitoring, per-command-attempt logging, retry counters, and additional derived sensors creates dozens of new entities that each generate recorder writes. HA SQLite DB grows faster, history graphs slow down, and eventually the RPi4's SD card starts showing I/O latency.
+**What goes wrong:** A human presses Temp Up/Down on the physical panel while automation is running. The ESP32 has no knowledge of this change. Its internal model of the current setpoint is now wrong. The next re-home sequence will set the correct absolute temperature (because it re-homes to floor first), but until that happens, the ESP32's reported state in Home Assistant is stale.
 
-**Why it happens:** Each new sensor added to HA generates at least one state change per update interval. The recorder writes all state changes to SQLite by default. On a Raspberry Pi 4 with SD card storage, write throughput is limited. The current SQL sensors already query the full `states` table with 30-day windows -- adding more sensors increases both write load (more entities) and read load (more SQL queries against a larger DB).
+**Why it happens:** The VL-series panel is purely analog. There is no digital feedback from button presses on the panel. The ESP32 cannot detect that someone pressed a button on the physical panel. In Phase 1, the ESP32 is completely blind to the actual setpoint.
 
 **Prevention:**
-1. Be ruthless about recorder exclusion. New diagnostic/debugging sensors should be excluded from the recorder unless they're explicitly needed for history graphs. Use `recorder: exclude: entities:` in HA config.
-2. Set `recorder.purge_keep_days` to 10-14 days (not the default, which may be longer). For thermal model queries that look back 30 days, the SQL sensors already handle this window -- you don't need the full recorder to retain 30 days of everything.
-3. Prefer event-based logging over high-frequency polling for command attempts. Instead of a sensor that updates every second with retry state, fire an HA event on each command attempt and completion, then use the logbook or a custom counter.
-4. Consider moving the HA recorder to MariaDB on the Synology NAS (the user has one) rather than SQLite on the RPi4. This also solves the "DB inaccessible from dev machine" blocker -- MariaDB can be queried remotely.
-5. For the thermal model SQL sensors, the 30-day lookback window with correlated subqueries is computationally expensive on SQLite. If these queries start taking >5 seconds, they'll block the HA main thread. Monitor query execution time.
+- Accept this limitation in Phase 1. Document it clearly for users. The re-home strategy bounds the damage: the next scheduled transition will correct the setpoint.
+- In Phase 2, display reading detects the actual current setpoint, eliminating this issue.
+- Consider running a re-home sequence on a timer (e.g., every 2 hours) rather than only at TOU transition points, to correct for manual overrides faster.
+- In the HA UI, display a caveat: "Reported temperature may be inaccurate if panel was used manually."
 
-**Detection:** Monitor `homeassistant_v2.db` file size and growth rate. If growing >100MB/week, identify the chattiest entities and exclude them. Monitor HA startup time -- if >2 minutes, the DB is likely too large.
+**Detection:** Only detectable in Phase 2 via display reading. In Phase 1, user must visually verify.
+
+**Phase:** Acknowledged in Phase 1, resolved in Phase 2.
+
+**Confidence:** HIGH -- inherent to the architecture.
 
 ---
 
-### Pitfall 9: Timestamp Misalignment in Data Correlation
+### Pitfall 10: ESP32 Environmental Damage from Hot Tub Proximity
 
-**What goes wrong:** Power monitoring data from Enphase, temperature data from ESPHome, and setpoint data from HA entities all have different timestamps, sampling rates, and latency characteristics. When the thermal model tries to correlate "setpoint raised at T=0, temperature reached target at T=45min," the actual timestamps could be off by 30-120 seconds due to:
-- ESPHome temperature `heartbeat: 30s` filter (up to 30s lag)
-- Enphase cloud API polling interval (typically 15-minute granularity for consumption data)
-- HA state change timestamps being "when HA received the update," not "when the physical event happened"
-- SQL `last_updated_ts` being the HA-side timestamp, not the ESP32's local clock
+**What goes wrong:** The ESP32, breadboard, and wiring corrode, short, or fail due to humidity, chemical vapors (chlorine/bromine), water splashes, or temperature cycling. The hot tub environment combines high humidity, corrosive chemicals, and potential splash exposure -- the worst possible environment for bare electronics.
 
-**Why it happens:** Each data source has its own clock, sampling rate, and pipeline latency. The `analyze_heating.py` script already resamples everything to a 1-minute grid, which masks small misalignments but can shift event boundaries by up to 1 minute. For heating rate calculations, 1-minute error on a 45-minute event is ~2% error -- acceptable. But for "did the heater turn on within 60 seconds of the setpoint change?" type correlation, misalignment matters.
+**Why it happens:** Breadboard contacts oxidize in humid environments. Chlorine vapor accelerates copper corrosion on PCB traces and jumper wire contacts. Temperature cycling (hot cover + cold outdoor air) causes condensation inside enclosures. Water splash from jets or cover removal can reach nearby electronics.
 
 **Prevention:**
-1. Always use HA-side timestamps (`last_updated_ts`) for correlation, not source-side timestamps. This ensures all data is on the same clock even if it's slightly lagged from physical reality.
-2. Add tolerance windows to all event correlation. "Heater turned on within 2 minutes of setpoint raise" not "within 30 seconds."
-3. For Enphase data specifically: if using the cloud API, expect 5-15 minute granularity. This makes it useless for real-time correlation but fine for "did the heater run for approximately the expected duration today?" type validation.
-4. If per-circuit monitoring becomes available, prefer local polling (Envoy local API, ~1 second updates) over cloud API (15-minute updates).
-5. Document the expected latency of each data source explicitly, so future correlation logic knows its error budget.
+- Phase 1 (breadboard prototype) is explicitly temporary. Accept it will degrade. Plan to move to soldered protoboard or PCB within weeks, not months.
+- Mount the ESP32 at least 3 feet from the tub edge and above the water line.
+- Use an IP65-rated enclosure with cable glands for any permanent installation.
+- Apply conformal coating to the final soldered board.
+- Route the RJ45 cable (which goes to the tub) through a drip loop before entering the enclosure.
+- Use silicone-sealed connectors, not bare screw terminals, for the final installation.
 
-**Detection:** In the thermal model output, check whether heating event "start time" aligns with setpoint change time to within 2 minutes. If events are consistently offset by >5 minutes, a pipeline is adding unexpected latency.
+**Detection:** Intermittent WiFi disconnects, erratic GPIO behavior, visible corrosion on contacts, musty smell inside enclosure.
+
+**Phase:** Phase 1 (breadboard is temporary), permanent enclosure should be planned for Phase 2/3 deployment.
+
+**Confidence:** HIGH -- well-documented in outdoor ESP32 projects and hot tub electronics.
+
+**Sources:**
+- [How to Waterproof ESP32 for Outdoor IoT Applications](https://waterproofrd.com/how-to-waterproof-esp32-pk441/)
+- [Hot tub control panel fogging/moisture damage](https://www.justanswer.com/pool-and-spa/tks7z-hot-tub-control-panel-fogging.html)
 
 ---
 
 ## Minor Pitfalls
 
-### Pitfall 10: Over-Engineering Sensor Fusion for a 2-3 Source System
+### Pitfall 11: NVS Flash Wear from Frequent State Saves
 
-**What goes wrong:** Seeing "sensor fusion" in the milestone goals, the temptation is to build a Kalman filter or Bayesian estimator that fuses temperature, heater bit, and power monitoring into a unified state estimate. This adds significant complexity (matrix math, tuning parameters, initialization) for a system with only 2-3 independent signals. The fusion model becomes the hardest thing to debug when something goes wrong, and its internal state is opaque to dashboard inspection.
-
-**Why it happens:** "Sensor fusion" is a well-established technique in robotics and aerospace, where you have 6+ noisy sensors that need to be combined in real-time. Applying the same approach to a system with a temperature sensor, a maybe-trustworthy status bit, and an aggregate power measurement is overkill. The signals are too few and too different in nature (continuous float, binary bit, aggregate power) to benefit from formal fusion.
+**What goes wrong:** ESPHome's `restore_value: true` on globals writes to NVS flash on every state change. If the firmware logs temperature readings, counters, or timestamps to NVS on every sensor poll (e.g., every 60 seconds), it can wear the flash partition within months.
 
 **Prevention:**
-1. Use simple voting logic instead of formal sensor fusion. "If 2 of 3 sources agree the heater is on, it's on." This is debuggable, dashboardable, and requires no matrix algebra.
-2. For the thermal model, use the temperature derivative as the primary signal and the other sources as sanity checks, not inputs to a combined estimator.
-3. Reserve complexity for when simple approaches demonstrably fail. If the voting logic gives wrong answers >10% of the time, _then_ consider something more sophisticated.
-4. Every derived signal should be independently displayable on the dashboard. If you can't explain what each sensor is contributing by looking at a history graph, the fusion is too opaque.
+- Use `restore_value: true` only for the target setpoint and re-home state, not for rapidly changing values.
+- Set ESPHome's `flash_write_interval` to at least 5 minutes (default is adequate for this use case).
+- For Phase 2 display readings, store current temperature in RAM only, not NVS.
 
-**Detection:** If debugging a thermal model discrepancy requires reading source code rather than looking at dashboard graphs, the system is too complex for the number of data sources.
+**Phase:** Phase 1 (firmware config, Task 1).
+
+**Confidence:** MEDIUM -- ESP32 NVS wear leveling mitigates this significantly; mainly a concern if implementation is careless.
+
+**Sources:**
+- [Flash Memory Wear Effects of ESPHome Recovery](https://newscrewdriver.com/2022/03/25/flash-memory-wear-effects-of-esphome-recovery-esp8266-vs-esp32/)
 
 ---
 
-### Pitfall 11: Breaking Existing Working Features When Adding New Ones
+### Pitfall 12: MAX485 Voltage Level Mismatch with ESP32
 
-**What goes wrong:** The TOU automation works. Thermal runaway works. Display decoding works. In the process of adding retry logic, the probe+cache setpoint control gets a new code path that subtly changes press timing. Or adding a new sensor entity causes the ESPHome component to use more RAM, making WiFi less stable. Or adding SQL sensors slows HA enough that the API connection to ESPHome times out more often, increasing button press failures.
-
-**Why it happens:** Integration effects. The existing system runs at a specific resource envelope (ESP32 RAM/CPU, WiFi stability, HA responsiveness). New features consume from the same resource pool. ESPHome on ESP32 WROOM-32 has limited RAM (~320KB usable); each new sensor entity consumes some. HA on RPi4 has limited I/O throughput; each new SQL query consumes some.
+**What goes wrong:** The MAX485 modules (5x on hand for Phase 2 display reading) operate at 5V logic. The ESP32 GPIO pins are 3.3V. While ESP32 inputs are 5V-tolerant on some pins (undocumented, not officially supported), driving a 5V MAX485 from 3.3V ESP32 TX may produce marginal logic levels.
 
 **Prevention:**
-1. Measure baseline before adding features: ESP32 free heap, WiFi reconnect rate, HA response time for API calls, button press success rate. After each new feature, re-measure.
-2. Add features one at a time and soak-test for at least 48 hours (covering multiple TOU cycles) before adding the next.
-3. If ESP32 free heap drops below 50KB, new entities must be justified. Consider consolidating diagnostic text sensors into fewer entities.
-4. If button press success rate drops after a change, back out the change before investigating.
-5. Keep a "feature flag" pattern: new features should be disable-able via `input_boolean` helpers without requiring a firmware reflash or HA restart.
+- For Phase 2 (read-only display tap), the MAX485 RX output goes to ESP32 input. Use a voltage divider (2K/3.3K) or a level shifter on the MAX485 RO pin.
+- Power the MAX485 from the hot tub board's +5V (Pin 1), not from the ESP32's 3.3V.
+- The B0505S-1W isolated DC-DC is already in the BOM for this exact purpose.
+- The MAX485 DE/RE pins for read-only operation should be tied to GND (permanent receive mode), avoiding any GPIO control complexity.
 
-**Detection:** Dashboard panel showing ESP32 free heap, WiFi signal, uptime, and button press success rate. Any sustained degradation after a change is a regression signal.
+**Phase:** Phase 2 (display reading).
+
+**Confidence:** HIGH -- standard MAX485 + ESP32 integration concern, well-documented.
+
+**Sources:**
+- [MAX485 TTL to RS485 Interfacing with ESP32](https://hackatronic.com/max485-ttl-to-rs485-modbus-module-interfacing-with-esp32/)
+- [ESP32 RS-485 Forum Discussion](https://esp32.com/viewtopic.php?t=36288)
 
 ---
 
-### Pitfall 12: HA SQLite DB Inaccessible from Dev Machine
+### Pitfall 13: Home Assistant TOU Automation Edge Cases
 
-**What goes wrong:** The thermal model validation requires querying `home-assistant_v2.db`, which lives on the RPi4 running HA OS. The dev machine cannot directly access this file. The `analyze_heating.py` script requires a local copy of the DB. Copying a live SQLite DB while HA is writing to it can produce a corrupted copy (SQLite WAL mode). This creates a friction that blocks iteration: every thermal model change requires SSH into the RPi, stop recorder, copy DB, restart, copy to dev machine, test.
-
-**Why it happens:** HA OS runs in a containerized environment on the RPi4. The SQLite DB is in the container's `/config/` directory. Direct file access requires Samba addon, SSH addon, or SCP. The DB is frequently locked by HA's recorder, making live copies risky.
+**What goes wrong:** The HA automation for TOU scheduling (99F on-peak 10am-9pm weekdays, 104F off-peak) can fail on edge cases: holidays (rates may differ), DST transitions (spring forward creates a 23-hour day), HA restarts during a transition window, or concurrent automations racing to set different temperatures.
 
 **Prevention:**
-1. Set up the Samba or SSH addon on HA OS for dev access.
-2. Use `sqlite3 .backup` (not `cp`) to get a consistent copy: `sqlite3 /config/home-assistant_v2.db ".backup /tmp/ha_backup.db"` -- this works even while HA is writing.
-3. Better: expose data via HA's REST API or long-lived access tokens. The `analyze_heating.py` script could query the HA API for entity history instead of the DB directly. The `/api/history/period` endpoint returns JSON.
-4. Best: migrate the recorder to MariaDB on the Synology NAS. This is network-accessible, supports concurrent reads, and eliminates the SQLite-on-SD-card performance and accessibility concerns simultaneously.
-5. For thermal model iteration specifically: export a snapshot CSV of the relevant entity histories once per week, and iterate against the CSV locally. Only go back to the live DB for final validation.
+- Use HA's `time` trigger (not `time_pattern`) for precise scheduling
+- Add a condition to check current setpoint before commanding a change (avoid redundant re-home sequences)
+- Use `mode: single` on the automation to prevent concurrent execution
+- For DST: test by temporarily shifting system clock
+- For holidays: the $10/month savings is small enough that holiday exceptions are not worth the complexity. The worst case is heating at on-peak rate for one day (~$0.50 extra).
+- Add a manual override input_boolean in HA to suppress automation (e.g., for parties, maintenance)
 
-**Detection:** If thermal model changes take >1 hour to validate due to data access friction, the pipeline needs improvement.
+**Phase:** Phase 1 (Task 4, HA automation).
+
+**Confidence:** MEDIUM -- standard HA automation concerns, not highly specific to this project.
+
+---
+
+### Pitfall 14: Overwriting Capture Data (Again)
+
+**What goes wrong:** The project has already lost one critical capture file (`rs485_capture.txt` was overwritten with Pin 6 data, destroying the original Pin 5 button-press capture). As more captures are taken (especially the Phase 1.5 temperature ladder), files could be overwritten again without tracking what was lost.
+
+**Prevention:**
+- Create `485/CAPTURES_INDEX.md` before any new captures: filename, date, pin, test conditions, known temperature at capture time.
+- Use descriptive filenames with dates: `rs485_pin5_templadder_104_to_99_2026-03-20.txt`
+- Never reuse filenames. Append a suffix rather than overwriting.
+- Commit captures to git immediately after taking them.
+
+**Phase:** Phase 1.5 (temperature ladder capture, Task 5).
+
+**Confidence:** HIGH -- already happened once in this project.
+
+---
+
+### Pitfall 15: Unsafe Temperature Command from Software Bug
+
+**What goes wrong:** A firmware bug, HA automation error, or edge case causes the system to enter a loop that continuously presses Temp Up, or an integer overflow in the press counter produces an absurd number of presses.
+
+**Why it happens:** Software bugs. A stuck GPIO, an off-by-one in the press counter, or an automation that fires twice could overshoot the target.
+
+**Consequences:** The board itself clamps setpoint to 80-104F range, which is the hardware safety floor. The board also has a high-limit switch (110-120F hardware thermal cutoff). So the risk is bounded to 104F maximum setpoint, not runaway heating. But 104F during on-peak hours is the exact scenario the automation exists to prevent.
+
+**Prevention:**
+- Firmware-level hard clamp: reject any setpoint outside 80-104F range before generating button presses.
+- Maximum press count limit: never send more than 24 presses in a single count-up cycle (104-80=24). Assert this in code.
+- Watchdog timer: if the re-home script takes longer than expected (e.g., >2 minutes), abort.
+- HA automation validation: use `input_number` with min/max constraints for setpoint targets.
+
+**Detection:** HA logs showing commanded setpoints. Firmware logs showing press counts exceeding expected range.
+
+**Phase:** Phase 1 (firmware config, Task 1; HA automation, Task 4).
+
+**Confidence:** HIGH -- standard software safety concern; mitigated by the board's own 104F clamp.
 
 ---
 
@@ -252,50 +393,44 @@ Mistakes that cause rework, unsafe conditions, or loss of trust in the system.
 
 | Phase Topic | Likely Pitfall | Mitigation |
 |-------------|---------------|------------|
-| Command reliability (retry logic) | Pitfall 5: retry storm overshooting setpoint | Cap retries at 2, separate "command failed" from "verify inconclusive," enforce press budget |
-| Command reliability (verify after write) | Pitfall 1 variant: verification read triggers display mode change | Only verify by reading display, never by sending additional presses; wait for stable temperature display mode before verifying |
-| Data pipeline (SQL sensors) | Pitfall 8: new sensors bloat DB on RPi4 | Exclude diagnostic sensors from recorder; consider MariaDB migration to Synology |
-| Data pipeline (remote access) | Pitfall 12: iteration blocked by DB access | Use HA REST API or MariaDB migration; don't depend on SQLite file copy |
-| Power monitoring (Enphase) | Pitfall 7: dryer/oven/EV false positives | Never use power as sole heater signal; use 2-of-3 voting with temp derivative and heater bit |
-| Power monitoring (correlation) | Pitfall 9: timestamp misalignment between Enphase and ESPHome | Use HA-side timestamps only; add 2-minute tolerance windows |
-| Safety hardening (thermal runaway) | Pitfall 2: TOU and runaway fighting each other | Implement graduated response; add runaway cooldown flag; separate thermal coast from runaway |
-| Safety hardening (validation) | Pitfall 4: safety automation silently breaks | Weekly heartbeat test; watchdog automation monitoring runaway enablement state |
-| Sensor fusion | Pitfall 10: over-engineering for 2-3 sources | Simple voting logic, not Kalman filter; every signal independently visible on dashboard |
-| Integration testing | Pitfall 11: new features degrade existing ones | Measure baseline metrics; 48-hour soak test per feature; feature flags for rollback |
-| Heater status trust | Pitfall 3: status bit lies about heater state | Cross-validate with power and temp derivative; never gate safety on status bit alone |
-| Stale data | Pitfall 6: stale ESPHome data masks real conditions | Add data-age sensors; reduce API reboot timeout; check staleness in safety conditions |
-
----
-
-## Summary of Root Causes
-
-The pitfalls in this system cluster around three root causes:
-
-1. **Non-idempotent operations on a lossy channel.** The button-press interface is fundamentally relative and lossy. Every feature that sends presses must account for lost presses and the impossibility of "undoing" a press. This rules out net-zero pairs, makes retry logic dangerous, and forces verify-after-write as the only safe pattern.
-
-2. **Multiple automations sharing a single actuator without coordination.** TOU, thermal runaway, and future retry logic all write to the same setpoint number entity. Without explicit priority ordering and mutual awareness (via shared state like `input_boolean` flags), they will conflict. The solution is a clear hierarchy: safety > manual override > TOU schedule > convenience features.
-
-3. **Insufficient observability creating false confidence.** The system has sensors that _appear_ to work (heater bit, temperature) but may be unreliable in ways that only manifest under specific conditions. Adding more derived sensors (thermal model, power correlation) can amplify this by building on shaky foundations. Every new signal needs its own validation before being trusted as input to decisions.
+| Phase 1, Task 1: ESPHome firmware config | Wrong GPIO pin selection causes boot-time phantom presses (Pitfall 2) | Use only safe pins: GPIO 16, 17, 18, 19, 21, 22, 23, 25, 26, 27 |
+| Phase 1, Task 1: ESPHome firmware config | Re-home sequence race conditions (Pitfall 6) | Use `script:` with `mode: single`; global `is_rehoming` flag |
+| Phase 1, Task 2: Breadboard prototype | Photorelay on-resistance too high (Pitfall 7); loose breadboard contacts | Measure voltages empirically; use short, solid-core jumper wires |
+| Phase 1, Task 3: Button timing characterization | Unknown timing causes missed/extra presses (Pitfall 3) | Measure with logic analyzer; use 2x safety margin on all timing params |
+| Phase 1, Task 4: HA TOU automation | WiFi disconnect causes missed transition (Pitfall 5); edge cases (Pitfall 13) | Static IP, power_save_mode: none, fallback behavior on disconnect |
+| Phase 1, Task 4: HA TOU automation | Fighting freeze protection (Pitfall 4) | Add outdoor temp weather gate; skip low-setpoint commands when ambient < 35F |
+| Phase 1.5, Task 5: Temperature ladder capture | Data overwrite (Pitfall 14) | Descriptive filenames, capture index, immediate git commit |
+| Phase 2: Display stream decoding | Protocol harder than expected (Pitfall 8); voltage mismatch (Pitfall 12) | Temperature ladder first; level shifter; budget extra time |
+| Phase 2: Closed-loop control | Display reading errors cause wrong corrections | Validate decoded temp against expected range; require N consecutive matching reads before acting |
+| Phase 3: Community publication | Publishing incorrect protocol documentation | Verify all claims against empirical data; include capture files as evidence |
+| Long-term: Outdoor deployment | Environmental damage (Pitfall 10) | IP65 enclosure, conformal coating, drip loops |
 
 ---
 
 ## Sources
 
-- Project files: `ha/thermal_runaway.yaml`, `ha/tou_automation.yaml`, `ha/sensors.yaml`, `ha/thermal_model.yaml`, `esphome/tublemetry.yaml`
-- Project state: `.planning/STATE.md` (heater status bit concern, button press reliability, DB access blocker)
-- Project decisions: `.planning/PROJECT.md` (auto-refresh removal, thermal runaway deployment)
-- [Home Assistant Retry Integration (amitfin/retry)](https://github.com/amitfin/retry) -- exponential backoff patterns and expected_state verification
-- [HA Watchdog Rate Limiting Issue](https://community.home-assistant.io/t/configurable-retries-or-exponential-backoff-for-watchdog-to-avoid-rate-limit-exceeded-more-than-10-calls-in-000/896253)
-- [Home Assistant Automation Watchdog](https://andrewdoering.org/blog/2025/home-assistant-automation-watchdog/) -- patterns for protecting safety automations from accidental disabling
-- [Automating a Hot Tub with Home Assistant (bentasker.co.uk)](https://www.bentasker.co.uk/posts/blog/house-stuff/automating-our-hottub-with-home-assistant.html) -- stale data, deadman switch, overlapping automation conflicts
-- [Home Brew Pool Automation](https://www.troublefreepool.com/threads/home-brew-pool-automation-w-arduino-and-home-assistant.322511/) -- failsafe patterns for safety-critical heater control
-- [Idempotence on Embedded Systems](https://www.embeddedrelated.com/showarticle/629.php) -- garage door opener analogy for non-idempotent toggle operations
-- [NILM Disaggregation Limitations (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3571813/) -- resistive load confusion
-- [PNNL Load Disaggregation Study](https://www.pnnl.gov/main/publications/external/technical_reports/pnnl-24230.pdf) -- systematic mislabeling in every home tested
-- [HA SQL Sensor Performance](https://community.home-assistant.io/t/sql-affecting-ha-speed-and-responsiveness/637705)
-- [Optimizing HA Database](https://allthingsempty.wordpress.com/2026/02/18/optimising-your-home-assistant-database-without-tears/)
-- [HA ESP8266 False Positive Sensor Readings](https://admantium.medium.com/home-assistant-how-to-fix-api-disconnection-and-false-positive-sensor-readings-with-esp8266-boards-c4baa8e0987b) -- sensor reconnection triggering all sensors
-- [Stale PZEM Sensor Values](https://community.home-assistant.io/t/pzem-004t-stale-or-unavailable-sensor-values/906907) -- stale data appearing valid
-- [Binary Sensor Unknown State After Boot (esphome#10411)](https://github.com/esphome/esphome/issues/10411)
+- [ESP32 Strapping Pins Complete Guide - espboards.dev](https://www.espboards.dev/blog/esp32-strapping-pins/)
+- [ESP32 Pinout Reference - Random Nerd Tutorials](https://randomnerdtutorials.com/esp32-pinout-reference-gpios/)
+- [How to Choose Safe GPIO Pins on ESP32 WROOM-32](https://www.samgalope.dev/2024/12/28/safe-and-unsafe-pins-to-use-in-an-esp32-wroom-32/)
+- [ESPHome GPIO switch toggles on boot - GitHub issue #3094](https://github.com/esphome/issues/issues/3094)
+- [ESPHome disconnects constantly - GitHub issue #1237](https://github.com/esphome/issues/issues/1237)
+- [ESP32 loses connection after 3h20m - GitHub issue #1196](https://github.com/esphome/issues/issues/1196)
+- [Dealing with ESPHome Disconnects - theFrankes.com](https://www.thefrankes.com/wp/?p=4693)
+- [ESP32 Disconnects Randomly - espboards.dev](https://www.espboards.dev/troubleshooting/issues/wifi/esp32-disconnects-randomly/)
+- [Spa & Hot Tub Error Codes OH/OHH/OHS - Leslie's](https://lesliespool.com/blog/spa-hot-tub-error-codes-oh-ohh-omg.html)
+- [Freeze Protection on Balboa Systems - SpaGuts](https://www.spaguts.com/spagutsfaqs/support-freeze-protection-on-balboa-m7-systems)
+- [Preventing Freeze Damage - Leslie's](https://lesliespool.com/blog/preventing-freeze-damage-to-a-spa-or-hot-tub.html)
+- [MagnusPer/Balboa-GS510SZ - GitHub](https://github.com/MagnusPer/Balboa-GS510SZ)
+- [ESPHome Custom Component for Synchronous Protocol - HA Community](https://community.home-assistant.io/t/expert-advice-sought-writing-an-esphome-custom-component-with-a-proprietary-synchronous-serial-protocol/735070)
+- [Balboa Hot Tub Automation - HA Community](https://community.home-assistant.io/t/balboa-hot-tub-spa-automation-and-power-savings/353032)
+- [Flash Memory Wear Effects of ESPHome - New Screwdriver](https://newscrewdriver.com/2022/03/25/flash-memory-wear-effects-of-esphome-recovery-esp8266-vs-esp32/)
+- [MAX485 Interfacing with ESP32 - Hackatronic](https://hackatronic.com/max485-ttl-to-rs485-modbus-module-interfacing-with-esp32/)
+- [How to Waterproof ESP32 for Outdoor IoT - Waterproofrd](https://waterproofrd.com/how-to-waterproof-esp32-pk441/)
+- [ESP32 Noise Triggers Input Button Events - ESP32 Forum](https://esp32.com/viewtopic.php?t=23160)
+- [ESPHome race condition in modbus_controller - GitHub issue #3885](https://github.com/esphome/issues/issues/3885)
+- [ESPHome delay not properly working - GitHub issue #5025](https://github.com/esphome/issues/issues/5025)
+- Project context: .planning/PROJECT.md, .planning/phases/01-button-injection-mvp/.continue-here.md, .planning/codebase/CONCERNS.md
 
-*Pitfalls analysis: 2026-04-12*
+---
+
+*Pitfalls research: 2026-03-13*

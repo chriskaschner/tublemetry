@@ -1,259 +1,254 @@
 # Technology Stack
 
-**Project:** Tubtron v2.0 -- Closed-Loop Trust
-**Researched:** 2026-04-12
-**Scope:** Stack ADDITIONS for new milestone features only. Existing ESP32/ESPHome/HA stack is validated and not re-researched.
+**Project:** Tubtron -- ESP32 Hot Tub Automation
+**Researched:** 2026-03-13
 
-## Recommended Stack Additions
+## Recommended Stack
 
-### 1. Command Reliability (Firmware-Side)
+### ESPHome Firmware (Core)
 
-The existing `ButtonInjector` state machine (PROBE -> ADJUST -> VERIFY -> COOLDOWN) already handles single-attempt command-verify. What is missing is **retry on verification failure** and **surfacing success/failure to HA**.
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| ESPHome | 2026.2.x (latest stable) | Firmware framework, HA integration, OTA | Native Home Assistant API, YAML-driven, massive community, OTA updates. The only serious option for ESP32+HA projects. | HIGH |
+| ESP-IDF framework | default (via ESPHome) | Underlying ESP32 framework | ESP-IDF became ESPHome's default for ESP32 in 2026.1.0. Produces 40% smaller binaries and 2-3x faster compiles vs Arduino. No reason to override. | HIGH |
+| ESP32 WROOM-32 (esp32dev) | N/A | Target hardware | Already ordered. Use `variant: esp32` in ESPHome config. The `board: esp32dev` setting is optional since ESPHome auto-fills it from variant. | HIGH |
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| ESPHome `set_timeout` + manual backoff | ESPHome >=2026.2.0 | Command retry with exponential backoff | `set_retry`/`RetryResult` was deprecated in ESPHome 2026.2.0, removed in 2026.8.0. The replacement is chained `set_timeout` calls with a member variable tracking attempts and interval. Since tublemetry already uses a hand-rolled state machine, the cleanest approach is to add retry logic directly into `ButtonInjector::finish_sequence_()` rather than using ESPHome scheduling primitives. |
-| ESPHome `text_sensor` | Already present | Surface injection result (success/timeout/retry count) to HA | The `injection_state_sensor_` already exists but only publishes phase. Extend to publish result + attempt count so HA automations can detect persistent failures. |
-| ESPHome sensor filters: `delta`, `heartbeat` | Already present | Noise rejection on display temperature reads | Already in use. No new filters needed firmware-side. |
+### ESPHome Components (Phase 1: Button Injection)
 
-**What NOT to add (firmware-side):**
+| Component | Purpose | Why | Confidence |
+|-----------|---------|-----|------------|
+| `external_components` (local) | Custom climate entity for VS300FL4 | ESPHome's built-in climate platforms (thermostat, bang_bang, PID) all require sensor feedback and implement their own heating control. The VS300FL4 already has its own thermostat -- we only set the setpoint. A minimal custom climate component exposes `target_temperature` to HA without fighting the board's control logic. | HIGH |
+| `output.gpio` | Drive photorelay LED inputs | Each GPIO drives one AQY212EH photorelay via 680R resistor. Simple on/off, no PWM needed. | HIGH |
+| `globals` (restore_value) | Persist last commanded setpoint across reboots | ESP32 stores target temp in NVS flash. On boot, reports stored value to HA. Prevents "unknown state" after power cycles. | HIGH |
+| `api` | Home Assistant native integration | Encryption key required (base64, 32-byte). Password auth removed in 2026.1.0. Auto-discovery via mDNS. | HIGH |
+| `ota.esphome` | Over-the-air firmware updates | Password-protected OTA. Essential for iterating on firmware without physical access to the tub enclosure. | HIGH |
+| `wifi` | Network connectivity | Standard WiFi with fallback AP mode. Use `!secret` for credentials. | HIGH |
+| `logger` | Serial debug output | Essential during prototyping for timing characterization. Reduce to WARN in production to save resources. | HIGH |
 
-| Rejected | Why |
-|----------|-----|
-| Kalman filter on ESP32 | Overkill. The temperature signal is a 3-digit integer from a 7-segment display decoded via GPIO interrupts -- it is inherently quantized to 1F resolution with no analog noise. The existing stability filter (3 consecutive identical frames) is the correct approach. Kalman filtering is for continuous noisy analog signals (IMU, ADC), not decoded digital displays. Adding it wastes ~2-8KB heap on a device with ~100-150KB free. |
-| esp-dsp library | Not needed. No DSP operations required -- no FFT, no matrix math, no signal filtering. The display protocol is synchronous clock+data, not an analog signal. |
-| TinyEKF | Same reasoning as Kalman. The "sensor" here is a decoded digital display, not a noisy analog measurement. |
-| MISRA-style static analysis tooling | Disproportionate for a single-installation home project. The MISRA-inspired principles (defensive coding, bounds checking, safe state on failure) should be applied as coding discipline, not enforced by tooling. The ESP32 controls photorelays that simulate button presses -- it cannot directly drive the 4kW heater. The Balboa controller's own thermostat is the safety-critical element. |
-| ESPHome `set_retry` | Deprecated 2026.2.0, removed 2026.8.0. Do not introduce it. |
-| `esphome-state-machine` external component | The existing hand-rolled `InjectorPhase` enum + switch-based state machine is simpler, more debuggable, and already working. Adding an external YAML-driven state machine component would require refactoring proven code for no benefit. |
+### ESPHome Components (Phase 2: Display Reading)
 
-**Retry architecture recommendation:**
+| Component | Purpose | Why | Confidence |
+|-----------|---------|-----|------------|
+| Extended external component | Add RS-485 synchronous protocol decoder to existing climate component | No built-in ESPHome component handles the VS300FL4's clock+data protocol. Add ISR-driven frame decoder to the C++ component. Feeds `current_temperature` into the existing climate entity. | HIGH |
+| `uart` | Hardware UART for RS-485 data reception | ESP32 UART1 receives display data via MAX485 transceiver. 115200 baud, 8N1. ESPHome's UART component handles hardware configuration. | HIGH |
 
-Add retry logic inside `ButtonInjector` itself:
+### Home Assistant (TOU Automation)
 
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| Home Assistant | 2026.3.x (latest) | Automation platform | Already the target platform. TOU scheduling is straightforward HA automation. | HIGH |
+| `climate.set_temperature` | Service call in automations | Standard HA climate action. Set target temp on time trigger with weekday conditions. Works because we expose a climate entity, not a raw number. | HIGH |
+| `automation` (time trigger) | TOU schedule execution | Two automations: 10am weekdays -> 99F, evening (before use) -> 104F. Time trigger + condition on weekday. | HIGH |
+| `input_number` (optional) | User-adjustable TOU temps | Allows changing the on-peak/off-peak targets from the HA dashboard without editing automations. Nice-to-have, not critical for MVP. | MEDIUM |
+
+### Python Analysis Tools (Existing)
+
+| Technology | Version | Purpose | Why | Confidence |
+|------------|---------|---------|-----|------------|
+| Python | 3.10+ | RS-485 protocol analysis scripts | Already in codebase (485/scripts/). Keep using for offline analysis. | HIGH |
+| uv | latest | Python package/environment management | User preference per CLAUDE.md. Use for managing pyserial, numpy dependencies. | HIGH |
+| pyserial | latest | Serial communication with RS-485 adapter | Already used in capture scripts. | HIGH |
+| numpy | latest | Logic analyzer CSV analysis | Already used in decode_7seg.py. | HIGH |
+
+### Development Tools
+
+| Technology | Purpose | Why | Confidence |
+|------------|---------|-----|------------|
+| ESPHome CLI (`pip install esphome`) | Compile and flash firmware | Can validate YAML and compile without hardware. Install via `uv pip install esphome`. | HIGH |
+| ESPHome Dashboard (optional) | Web UI for managing devices | Runs as HA add-on or standalone Docker. Nice for OTA but CLI works fine. | MEDIUM |
+| PlatformIO (implicit) | Build system under ESPHome | ESPHome uses PlatformIO internally. No direct interaction needed. | HIGH |
+
+## Architecture Decision: Custom Climate Component from Phase 1
+
+The central design question is how to expose the hot tub to Home Assistant. After evaluating all options:
+
+| Approach | Verdict | Reason |
+|----------|---------|--------|
+| `climate.thermostat` with dummy sensor | REJECTED | Thermostat platform implements its own heating control logic with hysteresis, deadband, and PID. The hot tub board already has its own thermostat. Two control loops fighting each other is dangerous and wasteful. |
+| `climate.bang_bang` | REJECTED | Same problem -- implements heating/cooling control logic. We only set the target temperature. |
+| `climate.pid` | REJECTED | Same problem, plus requires actual sensor feedback for the PID algorithm to work at all. |
+| Template climate (feature request #2783) | NOT AVAILABLE | Requested but not merged into ESPHome as of 2026.2. Would be ideal if it existed. |
+| `number.template` entity | CONSIDERED | Simple and honest, but HA treats it as a raw number, not a climate device. No thermostat card, no HVAC mode, no native `climate.set_temperature` service call. Would need migration to climate entity later. |
+| **Custom external climate component** | **CHOSEN** | A minimal C++ class extending `climate::Climate` + `Component`. Phase 1: only `target_temperature` (no `current_temperature`). Phase 2: add `current_temperature` from display reading. HA gets a proper climate entity from day one -- thermostat card, `climate.set_temperature`, correct entity type. The C++ is ~100-200 lines for Phase 1. |
+
+**Key insight:** A custom climate component does NOT need to implement heating control logic. It just needs to:
+1. Accept a target temperature from HA
+2. Execute the re-home + count-up button sequence
+3. Report the target temperature back to HA
+4. Expose `heat` mode (the board is always heating/maintaining)
+
+This is simpler than it sounds. The Ylianst/ESP-IQ2020 and brianfeucht/esphome-balboa-spa projects both follow this exact pattern.
+
+## Why ESP-IDF, Not Arduino
+
+ESP-IDF became the default ESP32 framework in ESPHome 2026.1.0. Benefits:
+- 40% smaller binaries (critical -- Phase 2 custom component will add significant code)
+- 2-3x faster compile times during development iteration
+- Arduino is now integrated as an ESP-IDF component internally, so Arduino APIs remain available if needed
+- No components in this project require Arduino-only features
+
+Do NOT explicitly set `type: arduino` unless a specific component demands it.
+
+## Why External Component, Not Lambda
+
+The button injection re-home sequence and (later) the synchronous protocol decoder require:
+- State machine for press sequencing (Phase 1) and frame assembly (Phase 2)
+- GPIO interrupt handlers with IRAM_ATTR (Phase 2)
+- Non-blocking timing (yield to event loop between presses)
+- Testable, maintainable C++ code
+
+ESPHome lambdas are limited to single expressions or short inline C++. They cannot define ISR handlers, maintain complex state machines, or be unit-tested. A proper external component with `__init__.py` + `climate.py` + C++ source files is the right structure from the start.
+
+Reference: MagnusPer/Balboa-GS510SZ uses this ISR-driven approach for the GS-series (same protocol family).
+
+## Alternatives Considered
+
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| Firmware framework | ESPHome | Arduino IDE + MQTT | Massive maintenance burden. No native HA climate entity. No OTA without extra code. ESPHome handles all of this. |
+| Firmware framework | ESPHome | Tasmota | Tasmota is device-focused (smart plugs, bulbs). Poor support for custom protocols. No equivalent to ESPHome external components. |
+| Firmware framework | ESPHome | MicroPython | No native HA integration. Poor real-time performance for ISR-driven protocol decoding. Python on ESP32 is too slow for bit-banging. |
+| HA integration | ESPHome native API | MQTT | Extra broker to maintain. No auto-discovery of entity types. ESPHome's native API is faster, simpler, and more feature-rich. |
+| ESP32 framework | ESP-IDF (default) | Arduino | Arduino produces larger binaries and slower compiles. ESP-IDF is now default. No benefit to overriding. |
+| Entity type | Custom climate component | number.template | Climate entity gives HA a thermostat card, proper HVAC mode, and standard `climate.set_temperature` service. Number entity would require migration later. |
+| Phase 2 decode | External component (C++) | ESPHome lambda | Lambdas cannot use IRAM_ATTR, cannot define ISR handlers, cannot maintain complex state machines cleanly. |
+
+## Installation
+
+### ESPHome Development Environment
+
+```bash
+# Install ESPHome CLI via uv
+uv pip install esphome
+
+# Validate configuration without hardware
+esphome config tubtron.yaml
+
+# Compile without uploading (verify it builds)
+esphome compile tubtron.yaml
+
+# Flash via USB (first time)
+esphome run tubtron.yaml
+
+# Flash OTA (subsequent updates, after WiFi is configured)
+esphome run tubtron.yaml --device tubtron.local
 ```
-finish_sequence_(TIMEOUT) currently:
-  -> clears known_setpoint_
-  -> transitions to COOLDOWN
 
-finish_sequence_(TIMEOUT) with retry:
-  -> if retry_count_ < max_retries_ (default: 2):
-       increment retry_count_
-       re-enter PROBING (since known_setpoint_ is now NAN)
-  -> else:
-       publish FAILED to HA
-       transition to COOLDOWN
-       reset retry_count_
-```
-
-This keeps all retry logic in C++ on the ESP32 (no HA automation round-trips needed) and uses the existing state machine phases. The retry count and final result should be published to HA via a new `sensor` (numeric: `command_success_rate`) and the existing `text_sensor` (state string like `"failed:104:2retries"`).
-
-### 2. Data Export Pipeline (Python-Side, Dev Machine)
-
-The goal is getting time-series data from HA's SQLite recorder onto the dev machine for Jupyter/pandas analysis.
-
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| `requests` | >=2.32.5 | HTTP client for HA REST API | Standard, already widely used. The HA REST API `/api/history/period/<timestamp>` endpoint with `filter_entity_id`, `minimal_response`, and `no_attributes` params is the simplest path for bulk export. |
-| `pandas` | >=2.3.0 (or 3.0.2 if on Python 3.11+) | Time-series analysis and DataFrame operations | Already used in `scripts/analyze_heating.py`. Pin to >=2.3.0 for broad compatibility; 3.0.2 is fine since project already requires Python >=3.11. |
-| `matplotlib` | >=3.10.0 | Plotting (scatter, time-series, correlation) | Already used in `scripts/analyze_heating.py` for `--plot` mode. |
-| Long-Lived Access Token | N/A (HA config) | Authentication for REST API calls | Generated at `http://<HA_IP>:8123/profile`. Store in `.env` file (gitignored) or pass as CLI arg. |
-
-**Two viable approaches, with recommendation:**
-
-| Approach | Pros | Cons | Recommendation |
-|----------|------|------|----------------|
-| **A: SCP the SQLite DB** | Full data, offline analysis, already proven in `analyze_heating.py` | Requires SSH/Samba to RPi, DB locked during HA writes, must copy ~50-200MB file | Keep as fallback for deep analysis |
-| **B: HA REST API** | No SSH needed, query specific entities/time ranges, lighter payloads, scriptable | Limited to recorder retention (~10 days default), no long-term statistics via REST, HTTP overhead | **Use for operational monitoring** |
-| C: WebSocket API | Real-time streaming, lower per-message overhead | Overkill for batch export, more complex client code, no history endpoint | Skip |
-| D: `homeassistant_api` wrapper lib | Nicer Python API | Extra dependency for little benefit over raw `requests` | Skip |
-| E: `HASS-data-detective` | Pre-built analysis tools | Unmaintained, adds dep chain, we already have custom analysis | Skip |
-
-**Recommendation: Use BOTH A and B.** SCP for deep historical analysis (the existing `analyze_heating.py` pattern), REST API for a new lightweight `scripts/export_ha_data.py` that pulls recent data on demand.
-
-The REST API script pattern:
-
-```python
-# scripts/export_ha_data.py
-# Usage: uv run scripts/export_ha_data.py --entity sensor.tublemetry_hot_tub_temperature --days 7
-import requests
-import pandas as pd
-
-HA_URL = os.environ["HA_URL"]  # e.g. http://homeassistant.local:8123
-HA_TOKEN = os.environ["HA_TOKEN"]
-
-response = requests.get(
-    f"{HA_URL}/api/history/period/{start_time}",
-    headers={"Authorization": f"Bearer {HA_TOKEN}"},
-    params={
-        "filter_entity_id": entity_id,
-        "end_time": end_time,
-        "minimal_response": "",
-        "no_attributes": "",
-    },
-)
-```
-
-**Key limitation:** The REST API `/api/history/period/` is limited to the recorder's short-term retention window (default 10 days, configurable). For data older than that, you must use the SCP+SQLite approach or configure HA's recorder to retain longer:
+### Minimal ESPHome YAML Structure
 
 ```yaml
-# configuration.yaml on HA
-recorder:
-  purge_keep_days: 30
+esphome:
+  name: tubtron
+  friendly_name: Tubtron
+  min_version: "2026.2.0"
+
+esp32:
+  variant: esp32
+  # framework defaults to esp-idf in 2026.2.x
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Tubtron Fallback"
+    password: !secret fallback_password
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+logger:
+  level: DEBUG  # reduce to WARN for production
+
+output:
+  - platform: gpio
+    id: temp_up_relay
+    pin: GPIO16
+
+  - platform: gpio
+    id: temp_down_relay
+    pin: GPIO17
+
+climate:
+  - platform: tubtron
+    name: "Hot Tub"
+    temp_up_output: temp_up_relay
+    temp_down_output: temp_down_relay
+    min_temperature: 80
+    max_temperature: 104
+    temperature_step: 1
 ```
 
-### 3. Enphase Power Monitoring Integration (HA-Side)
+### External Component Structure
 
-| Technology | Version | Purpose | Why |
-|------------|---------|---------|-----|
-| Enphase Envoy core integration | Built into HA Core | Exposes whole-home power consumption as `sensor.envoy_<SERIAL>_current_power_consumption` (Watts) | Already a core HA integration, auto-discovered on LAN. No custom integration needed. Polls every 60 seconds by default. |
-| HA template sensor | Built into HA | Derive heater power draw by differencing consumption during heater-on vs heater-off windows | The hot tub heater is 4kW (240V). When `binary_sensor.tublemetry_hot_tub_heater` transitions on->off or off->on, the whole-home power delta should be ~4000W. A template sensor can detect this correlation. |
-| `pandas` (dev machine) | >=2.3.0 | Offline correlation analysis: overlay Enphase power data with heater state binary sensor | Export both sensors via REST API or SCP, merge on timestamp, compute correlation. |
+```
+tubtron/
+  tubtron.yaml              # Main ESPHome config
+  secrets.yaml              # WiFi, API key, OTA password (gitignored)
+  components/
+    tubtron/
+      __init__.py            # CONFIG_SCHEMA, to_code()
+      climate.py             # Climate platform registration
+      tubtron_climate.h      # C++ class declaration
+      tubtron_climate.cpp    # C++ implementation
+```
 
-**Entity discovery pattern for Enphase:**
+### Home Assistant
 
-The Enphase integration creates entities named `sensor.envoy_<SERIAL>_<metric>`. The serial number is the Envoy's hardware serial. Key entities for this project:
+No installation needed beyond standard ESPHome integration. ESPHome devices auto-discover via mDNS when on the same network.
 
-| Entity Pattern | Unit | Update Rate | Purpose |
-|----------------|------|-------------|---------|
-| `sensor.envoy_<SN>_current_power_consumption` | W | 60s | Whole-home consumption including hot tub |
-| `sensor.envoy_<SN>_current_power_production` | W | 60s | Solar production (useful for net calculation) |
-| `sensor.envoy_<SN>_lifetime_energy_consumption` | Wh | 60s | Cumulative energy (state_class: total_increasing) |
-| `sensor.envoy_<SN>_lifetime_energy_production` | Wh | 60s | Cumulative solar energy |
+## GPIO Pin Allocation
 
-**CT clamp requirement:** Consumption monitoring requires a hardware CT clamp on the Envoy. Production monitoring works without CTs if microinverters are reporting. Verify the user's Envoy has consumption CTs installed.
+Based on ESP32 WROOM-32 capabilities and circuit design:
 
-**Heater validation template sensor (HA-side):**
+| GPIO | Function | Notes |
+|------|----------|-------|
+| GPIO16 | Temp Up photorelay | Via 680R to AQY212EH LED+. Drives Pin 2 of RJ45. |
+| GPIO17 | Temp Down photorelay | Via 680R to AQY212EH LED+. Drives Pin 8 of RJ45. |
+| GPIO18 | Lights photorelay (optional) | Via 680R to AQY212EH LED+. Drives Pin 3. |
+| GPIO19 | Jets photorelay (optional) | Via 680R to AQY212EH LED+. Drives Pin 7. |
+| GPIO4 | RS-485 RX (Phase 2) | UART1 RX. Connect to MAX485 RO pin for display reading. |
+| GPIO5 | RS-485 Clock In (Phase 2) | GPIO interrupt input for synchronous clock from Pin 6. |
+| GPIO2 | Onboard LED | Status indicator. Connected to blue LED on devkit. |
+
+**Avoid:** GPIO34-39 (input-only, no output capability). GPIO0, GPIO12, GPIO15 (boot-sensitive strapping pins).
+
+## Version Pinning Strategy
+
+ESPHome follows calendar versioning (YYYY.M.0). Pin to the major version in `esphome:` config via `min_version` but do NOT pin to patch level -- let OTA pick up bugfixes.
 
 ```yaml
-template:
-  - sensor:
-      - name: "Hot Tub Heater Power Estimate"
-        unit_of_measurement: "W"
-        state_class: measurement
-        device_class: power
-        state: >
-          {% set consumption = states('sensor.envoy_SERIAL_current_power_consumption') | float(0) %}
-          {% set heater_on = is_state('binary_sensor.tublemetry_hot_tub_heater', 'on') %}
-          {# This is a placeholder -- actual implementation needs baseline subtraction #}
-          {# Real approach: track consumption baseline when heater is off, subtract from current #}
-          {{ consumption if heater_on else 0 }}
+esphome:
+  name: tubtron
+  min_version: "2026.2.0"
 ```
-
-The actual heater power estimation is better done as offline analysis first (Python correlation script) before attempting a real-time HA template. The 60-second Enphase polling and the 1F temperature quantization make real-time correlation noisy.
-
-**What NOT to add (Enphase-side):**
-
-| Rejected | Why |
-|----------|-----|
-| Custom Enphase integration (HACS) | The core integration provides all needed entities. HACS alternatives (`home_assistant_custom_envoy`, `enphase_envoy_installer`) add inverter-level and installer-level features not needed for whole-home power monitoring. |
-| Direct Envoy local API access | The HA integration already polls the Envoy locally every 60s. Adding a separate Python script to poll the Envoy API would duplicate data collection and risk rate-limiting. |
-| Enphase Cloud API | Unnecessary. The Envoy is on the local LAN and the HA integration uses local polling (with cloud auth for token refresh on firmware >=7.0). |
-
-### 4. Safety & Signal Processing Paradigms (Coding Discipline, Not Libraries)
-
-This section is about applying IEC 61508-inspired thinking as **coding patterns**, not adding safety-certified tooling to a home automation project.
-
-| Concept | How It Applies | Implementation |
-|---------|---------------|----------------|
-| Command-verify-retry | Already architected in `ButtonInjector`. Add retry loop (see section 1). | C++ in `button_injector.cpp` |
-| Defensive state transitions | Every state machine transition should validate preconditions. Already partially done (bounds checking in `request_temperature()`). | Add assertions/checks at each `transition_to_()` call |
-| Safe state on failure | After max retries exhausted, the system should surface the failure and NOT silently accept a wrong setpoint. The Balboa controller itself is the safety backstop. | Publish `FAILED` to HA, leave `known_setpoint_` as NAN (forces re-probe on next attempt) |
-| Watchdog/heartbeat | ESPHome already has `reboot_timeout` for WiFi (10min) and API (15min). Add a software watchdog for the display decode pipeline -- if no valid frame in N minutes, publish `stale` state. | New `timeout` filter or lambda check in `loop()` |
-| Sensor fusion | Correlate: (a) display-decoded temperature, (b) heater binary state, (c) Enphase power. If heater shows "on" but Enphase shows no 4kW spike, flag anomaly. | Python-side analysis first, then HA automation if pattern proves reliable |
-| Graceful degradation | If display decode fails, TOU should continue with last-known-good setpoint (not crash). If Enphase is unavailable, heater validation degrades to display-only. | HA automation conditions checking sensor availability |
-
-**What NOT to add (safety-side):**
-
-| Rejected | Why |
-|----------|-----|
-| Formal Kalman filter for temperature | Display temperature is a decoded 3-digit integer. The "noise" is decode errors (wrong 7-segment lookup), not Gaussian sensor noise. The stability filter (3 consecutive identical frames) is the correct denoising approach. Kalman would smooth between valid readings, which is wrong -- you want to reject bad frames, not average them. |
-| MISRA-C static analysis tools (PC-lint, Polyspace) | Cost, complexity, and certification overhead are wildly disproportionate. This ESP32 simulates button presses; it cannot directly energize the heater. The Balboa controller has its own high-limit safety switch (hardware). Apply MISRA principles (no dynamic allocation in ISR, bounded loops, explicit error handling) as code review discipline. |
-| Redundant hardware (dual ESP32) | Single installation, non-safety-critical application. The thermal runaway automation in HA is the safety layer, and the Balboa controller's own thermostat + high-limit switch are the hardware safety layers. |
-| IEC 61508 SIL rating | This is a home automation project, not an industrial safety system. Borrowing the thinking (hazard analysis, safe states, diagnostic coverage) is valuable; pursuing formal certification is not. |
-
-## Existing Stack (No Changes Needed)
-
-These are already in place and validated. Listed for completeness.
-
-| Technology | Version | Purpose | Status |
-|------------|---------|---------|--------|
-| ESP32 WROOM-32 | N/A | Microcontroller (520KB SRAM, ~100-150KB free heap with ESPHome+WiFi) | Deployed |
-| ESPHome | 2026.3.1 (current) | Firmware framework, native HA integration | Update to latest stable |
-| Arduino framework | Via ESPHome | Hardware abstraction | No change |
-| AQY212EH photorelays | N/A | Galvanic-isolated button injection | Deployed |
-| Home Assistant OS | Latest | Automation platform, RPi4 | Running |
-| Python 3.11+ | 3.11 | Decode library, analysis scripts | In use |
-| pytest | >=9.0.2 | Test framework (391 tests for decode library) | In use |
-| SQLite (HA recorder) | Built-in | Time-series storage | In use |
-| `uv` | Latest | Python package/env management | In use |
-
-## New Python Dependencies
-
-Add to `pyproject.toml` under a new dependency group for analysis scripts:
-
-```toml
-[dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-    "pyyaml>=6.0",
-]
-analysis = [
-    "pandas>=2.3.0",
-    "matplotlib>=3.10.0",
-    "requests>=2.32.5",
-]
-```
-
-Then install with: `uv sync --group analysis`
-
-**Note:** `pandas` and `matplotlib` are already imported in `scripts/analyze_heating.py` but are not declared as dependencies. This formalizes them.
-
-## Integration Points with Existing ESPHome Component
-
-The new features touch the existing C++ component at specific, bounded points:
-
-| File | Change Type | What Changes |
-|------|-------------|-------------|
-| `button_injector.h` | Add members | `uint8_t retry_count_{0}`, `uint8_t max_retries_{2}`, new `sensor::Sensor *command_success_sensor_` |
-| `button_injector.cpp` | Modify `finish_sequence_()` | Add retry branch on TIMEOUT before transitioning to COOLDOWN |
-| `button_injector.cpp` | New method | `publish_result_()` to emit structured result string to text_sensor |
-| `tublemetry_display.h` | Add member | `uint32_t last_valid_frame_ms_{0}` for decode staleness detection |
-| `tublemetry_display.cpp` | Modify `process_frame_()` | Update `last_valid_frame_ms_` on successful decode |
-| `tublemetry_display.cpp` | Modify `loop()` | Check frame staleness, publish warning if stale > threshold |
-| `tublemetry.yaml` | Add entities | New sensors for command success rate, injection result details |
-
-## ESP32 Memory Budget
-
-The ESP32 WROOM-32 has ~100-150KB free heap with ESPHome + WiFi + the current component. The proposed additions are minimal:
-
-| Addition | Estimated Heap Cost | Notes |
-|----------|-------------------|-------|
-| Retry counter + max retries | ~16 bytes | Two uint8_t members |
-| Success rate sensor | ~200 bytes | ESPHome sensor object |
-| Result text sensor (extended) | ~0 bytes | Reuses existing injection_state_sensor_ |
-| Frame staleness tracking | ~8 bytes | One uint32_t member |
-| **Total** | **~224 bytes** | Negligible vs 100KB+ free heap |
-
-No new libraries, no dynamic allocation changes, no heap pressure concern.
 
 ## Sources
 
-### HIGH Confidence (official docs, verified)
-- [Home Assistant REST API](https://developers.home-assistant.io/docs/api/rest/) -- history/period endpoint, auth, params
-- [Enphase Envoy Integration](https://www.home-assistant.io/integrations/enphase_envoy/) -- entity patterns, CT requirements, firmware versions
-- [ESPHome Sensor Filters](https://esphome.io/components/sensor/) -- built-in filter catalog
-- [ESPHome set_retry Deprecation](https://developers.esphome.io/blog/2026/02/12/set_retry-deprecated-use-set_timeout-or-set_interval-instead/) -- deprecated 2026.2.0, removed 2026.8.0
-- [ESPHome Component Class](https://esphome.io/api/classesphome_1_1_component) -- set_timeout, set_interval API
-- [ESP-IDF Memory Types](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/memory-types.html) -- ESP32 SRAM layout
-- [ESPHome 2026.3.0 Release](https://esphome.io/changelog/2026.3.0/) -- current stable version
-
-### MEDIUM Confidence (official + community verified)
-- [HA Community: Extracting Data from HA DB](https://community.home-assistant.io/t/extracting-data-from-ha-database-for-further-data-analysis/571584) -- SCP + pandas workflow
-- [HA Community: Long-Term Statistics REST API](https://community.home-assistant.io/t/can-i-get-long-term-statistics-from-the-rest-api/761444) -- confirms REST API limitation to short-term data
-- [Enphase Envoy Community Issues](https://github.com/home-assistant/core/issues/82879) -- power sensor entity naming and state_class
-
-### LOW Confidence (needs validation)
-- Enphase Envoy polling frequency is configurable below 60s -- community reports but not in official docs
-- HA REST API hard limit at 10 days -- community reports vary between 3-10 days depending on recorder config
-- Exact free heap on this specific ESP32 with current firmware -- need to check via ESPHome `debug` component sensor
+- ESPHome ESP32 Platform docs: https://esphome.io/components/esp32/
+- ESPHome Climate Component: https://esphome.io/components/climate/
+- ESPHome External Components: https://esphome.io/components/external_components/
+- ESPHome GPIO Output: https://esphome.io/components/output/gpio/
+- ESPHome Output Button: https://esphome.io/components/button/output/
+- ESPHome Template Number: https://esphome.io/components/number/template/
+- ESPHome Actions/Automations: https://esphome.io/automations/actions/
+- ESPHome Security Best Practices: https://esphome.io/guides/security_best_practices/
+- ESPHome Globals (restore_value): https://esphome.io/components/globals/
+- ESPHome 2026.1.0 Changelog (ESP-IDF default): https://esphome.io/changelog/2026.1.0/
+- ESPHome 2026.2.0 Changelog (compile improvements): https://esphome.io/changelog/2026.2.0/
+- Custom components deprecation: https://developers.esphome.io/blog/2025/02/19/about-the-removal-of-support-for-custom-components/
+- External component structure: https://developers.esphome.io/architecture/components/
+- ESP-IDF GPIO interrupts: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/gpio.html
+- MagnusPer/Balboa-GS510SZ (reference): https://github.com/MagnusPer/Balboa-GS510SZ
+- Ylianst/ESP-IQ2020 (ESPHome spa reference): https://github.com/Ylianst/ESP-IQ2020
+- HA Climate integration: https://www.home-assistant.io/integrations/climate/
+- HA 2026.3 release: https://www.home-assistant.io/blog/2026/03/04/release-20263/

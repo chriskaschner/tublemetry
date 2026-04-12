@@ -25,6 +25,10 @@ DEFAULT_INTER_PRESS_DELAY_MS = 300
 DEFAULT_VERIFY_TIMEOUT_MS = 10000
 DEFAULT_COOLDOWN_MS = 1000
 
+# Retry constants (mirrors C++ values)
+MAX_RETRIES = 3
+BACKOFF_TABLE = [5000, 15000, 45000]  # ms: 5s, 15s, 45s per D-03
+
 
 def calculate_direct_sequence(from_setpoint: float, target: float) -> dict:
     """Calculate the direct-delta button press sequence.
@@ -65,6 +69,7 @@ class InjectorPhase:
     PROBING = "probing"
     ADJUSTING = "adjusting"
     VERIFYING = "verifying"
+    RETRYING = "retrying"
     COOLDOWN = "cooldown"
 
 
@@ -73,6 +78,8 @@ class InjectorResult:
     SUCCESS = "success"
     TIMEOUT = "timeout"
     ABORTED = "aborted"
+    FAILED = "failed"
+    BUDGET_EXCEEDED = "budget_exceeded"
 
 
 class SimulatedInjector:
@@ -95,6 +102,23 @@ class SimulatedInjector:
         self.configured = True
         self.transitions = []
 
+        # Retry state
+        self.retry_count = 0
+        self.max_retries = MAX_RETRIES
+        self.retry_backoff_ms = 0
+
+        # Press budget (D-06)
+        self.press_budget = 0
+        self.presses_consumed = 0
+
+        # Result sensor
+        self.last_command_result = InjectorResult.NONE
+
+        # Deferred setpoint publish (D-14)
+        self.pending_target = None
+        self.last_confirmed_setpoint = None
+        self.published_setpoint = None
+
     def request_temperature(self, target: float) -> bool:
         if not self.configured:
             return False
@@ -108,6 +132,8 @@ class SimulatedInjector:
         target = round(target)
         self.target_temp = target
         self.sequence_count += 1
+        self.retry_count = 0
+        self.presses_consumed = 0
 
         if self.known_setpoint is not None:
             self._start_adjusting(self.known_setpoint)
@@ -128,6 +154,8 @@ class SimulatedInjector:
         self.adjusting_up = delta > 0
         self.presses_needed = abs(delta)
         self.presses_done = 0
+        self.press_budget = abs(delta) + 2  # D-06: N+2 budget
+        self.presses_consumed = 0
         self._transition(InjectorPhase.ADJUSTING)
 
     def run_to_verify(self):
@@ -141,7 +169,10 @@ class SimulatedInjector:
         if self.phase == InjectorPhase.VERIFYING:
             if temp == self.target_temp:
                 self.last_result = InjectorResult.SUCCESS
+                self.last_command_result = InjectorResult.SUCCESS
                 self.known_setpoint = self.target_temp
+                self.last_confirmed_setpoint = self.target_temp
+                self.published_setpoint = self.target_temp
                 self._transition(InjectorPhase.COOLDOWN)
 
     def press_once(self):
@@ -149,11 +180,22 @@ class SimulatedInjector:
         self.known_setpoint = None  # real setpoint changed — probe on next request
 
     def timeout(self):
-        """Simulate verification timeout."""
+        """Simulate verification timeout. Routes through retry logic."""
         if self.phase == InjectorPhase.VERIFYING:
-            self.last_result = InjectorResult.TIMEOUT
-            self.known_setpoint = None  # don't know where setpoint landed — probe next time
-            self._transition(InjectorPhase.COOLDOWN)
+            self.known_setpoint = None  # don't know where setpoint landed
+            if self.retry_count < self.max_retries:
+                self.retry_count += 1
+                self.retry_backoff_ms = BACKOFF_TABLE[self.retry_count - 1]
+                self.last_result = InjectorResult.TIMEOUT
+                self._transition(InjectorPhase.RETRYING)
+            else:
+                self.last_result = InjectorResult.TIMEOUT
+                self.last_command_result = InjectorResult.FAILED
+                self.known_setpoint = None
+                # D-14: Revert setpoint on FAILED
+                if self.published_setpoint is not None or self.last_confirmed_setpoint is not None:
+                    self.published_setpoint = self.last_confirmed_setpoint
+                self._transition(InjectorPhase.COOLDOWN)
 
     def abort(self):
         """Abort the current sequence."""
@@ -161,6 +203,57 @@ class SimulatedInjector:
             self.last_result = InjectorResult.ABORTED
             self.known_setpoint = None  # don't know where setpoint landed — probe next time
             self._transition(InjectorPhase.COOLDOWN)
+
+    def budget_exceeded(self):
+        """Simulate press budget exceeded during ADJUSTING.
+
+        Budget exceeded follows the same retry flow as timeout (D-07).
+        If retries remain, transition to RETRYING. If exhausted, FAILED.
+        """
+        if self.phase == InjectorPhase.ADJUSTING:
+            self.known_setpoint = None
+            if self.retry_count < self.max_retries:
+                self.retry_count += 1
+                self.retry_backoff_ms = BACKOFF_TABLE[self.retry_count - 1]
+                self.last_result = InjectorResult.BUDGET_EXCEEDED
+                self._transition(InjectorPhase.RETRYING)
+            else:
+                self.last_result = InjectorResult.BUDGET_EXCEEDED
+                self.last_command_result = InjectorResult.FAILED
+                if self.published_setpoint is not None or self.last_confirmed_setpoint is not None:
+                    self.published_setpoint = self.last_confirmed_setpoint
+                self._transition(InjectorPhase.COOLDOWN)
+
+    def complete_retrying(self):
+        """Simulate backoff elapsed, transition from RETRYING to PROBING.
+
+        D-01: Always re-probe from scratch -- invalidate cache.
+        """
+        assert self.phase == InjectorPhase.RETRYING
+        self.known_setpoint = None  # D-01: invalidate cache
+        self._transition(InjectorPhase.PROBING)
+
+    def control_setpoint(self, value: float) -> bool:
+        """Simulate TublemetrySetpoint.control() -- deferred publish (D-14).
+
+        Stores pending_target, does NOT set published_setpoint.
+        Calls request_temperature internally.
+        """
+        self.pending_target = value
+        self.last_confirmed_setpoint = self.published_setpoint
+        return self.request_temperature(value)
+
+    def finish_sequence_result(self, result: str):
+        """Apply final result to published_setpoint.
+
+        On SUCCESS: published_setpoint = target_temp.
+        On FAILED: published_setpoint = last_confirmed_setpoint.
+        """
+        if result == InjectorResult.SUCCESS:
+            self.published_setpoint = self.target_temp
+            self.last_confirmed_setpoint = self.target_temp
+        elif result == InjectorResult.FAILED:
+            self.published_setpoint = self.last_confirmed_setpoint
 
     def finish_cooldown(self):
         """Complete cooldown and return to idle."""
@@ -401,13 +494,14 @@ class TestStateMachine:
         assert inj.sequence_count == 2
 
     def test_timeout_result(self):
+        """First timeout with retries remaining goes to RETRYING (not COOLDOWN)."""
         inj = SimulatedInjector()
         inj.known_setpoint = 95.0
         inj.request_temperature(100)
         inj.run_to_verify()
         inj.timeout()
         assert inj.last_result == InjectorResult.TIMEOUT
-        assert inj.phase == InjectorPhase.COOLDOWN
+        assert inj.phase == InjectorPhase.RETRYING
 
     def test_timeout_does_not_cache_setpoint(self):
         """Timeout clears known_setpoint — setpoint location is uncertain after failed sequence."""
@@ -520,12 +614,20 @@ class TestSetpointInvalidation:
         assert inj.known_setpoint is None
 
     def test_next_sequence_after_timeout_probes(self):
-        """After a timeout, the next request probes instead of using stale cache."""
+        """After all retries exhausted and cooldown, next request probes (stale cache cleared)."""
         inj = SimulatedInjector()
         inj.known_setpoint = 102.0
         inj.request_temperature(104.0)
+        # Exhaust all retries
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(102)
+        # 4th attempt times out -> FAILED -> COOLDOWN
         inj.run_to_verify()
         inj.timeout()
+        assert inj.phase == InjectorPhase.COOLDOWN
         inj.finish_cooldown()
         inj.request_temperature(104.0)
         assert inj.phase == InjectorPhase.PROBING
@@ -546,6 +648,381 @@ class TestSetpointInvalidation:
         inj.run_to_verify()
         inj.feed_temperature(100.0)
         assert inj.known_setpoint == 100.0
+
+
+class TestRetryLogic:
+    """Test retry state machine transitions."""
+
+    def test_timeout_with_retries_remaining_goes_to_retrying(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.phase == InjectorPhase.RETRYING
+        assert inj.retry_count == 1
+
+    def test_retry_transitions_to_probing(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.phase == InjectorPhase.RETRYING
+        inj.complete_retrying()
+        assert inj.phase == InjectorPhase.PROBING
+
+    def test_retry_invalidates_cache(self):
+        """D-01: After complete_retrying(), known_setpoint must be None."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        inj.complete_retrying()
+        assert inj.known_setpoint is None
+
+    def test_full_retry_then_success(self):
+        """timeout -> RETRYING -> complete_retrying -> PROBING -> complete_probe -> ADJUSTING -> verify -> SUCCESS."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.phase == InjectorPhase.RETRYING
+        inj.complete_retrying()
+        assert inj.phase == InjectorPhase.PROBING
+        inj.complete_probe(95)
+        assert inj.phase == InjectorPhase.ADJUSTING
+        inj.run_to_verify()
+        inj.feed_temperature(100)
+        assert inj.phase == InjectorPhase.COOLDOWN
+        assert inj.last_result == InjectorResult.SUCCESS
+
+    def test_retry_preserves_target(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.target_temp == 100
+
+    def test_multiple_retries_increment_count(self):
+        """3 successive timeouts produce retry_count 1, 2, 3."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+
+        for expected_count in [1, 2, 3]:
+            inj.run_to_verify()
+            inj.timeout()
+            assert inj.retry_count == expected_count
+            if expected_count < 3:
+                inj.complete_retrying()
+                inj.complete_probe(95)
+
+
+class TestRetryBackoff:
+    """Test exponential backoff timing between retries."""
+
+    def test_first_retry_backoff_5000ms(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.retry_backoff_ms == 5000
+
+    def test_second_retry_backoff_15000ms(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        inj.complete_retrying()
+        inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.retry_backoff_ms == 15000
+
+    def test_third_retry_backoff_45000ms(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        # Retry 1
+        inj.run_to_verify()
+        inj.timeout()
+        inj.complete_retrying()
+        inj.complete_probe(95)
+        # Retry 2
+        inj.run_to_verify()
+        inj.timeout()
+        inj.complete_retrying()
+        inj.complete_probe(95)
+        # Retry 3
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.retry_backoff_ms == 45000
+
+
+class TestRetryExhaustion:
+    """Test behavior when all retries are exhausted."""
+
+    def test_three_retries_then_failed(self):
+        """3 timeouts + 4th timeout -> COOLDOWN with FAILED."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        # 3 retries
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(95)
+        # 4th attempt times out -> FAILED
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.phase == InjectorPhase.COOLDOWN
+        assert inj.last_command_result == InjectorResult.FAILED
+
+    def test_failed_clears_known_setpoint(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.known_setpoint is None
+
+    def test_failed_distinct_from_timeout(self):
+        """last_command_result after exhaustion is 'failed', not 'timeout'."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.last_command_result == InjectorResult.FAILED
+        assert inj.last_command_result != InjectorResult.TIMEOUT
+
+    def test_retry_count_is_three_on_exhaustion(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.retry_count == 3
+
+
+class TestPressBudget:
+    """Test press budget calculation and enforcement."""
+
+    def test_budget_calculated_as_n_plus_2(self):
+        """For delta=5, press_budget=7."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        assert inj.press_budget == 7  # abs(100-95) + 2
+
+    def test_budget_for_delta_1(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(96)
+        assert inj.press_budget == 3  # abs(96-95) + 2
+
+    def test_budget_for_delta_0(self):
+        """No ADJUSTING phase (skip to VERIFYING), budget irrelevant."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(95)
+        assert inj.phase == InjectorPhase.VERIFYING
+        # Budget stays at 0 since _start_adjusting skips for delta 0
+        assert inj.press_budget == 0
+
+    def test_budget_exceeded_aborts_attempt(self):
+        """Simulate presses_consumed > press_budget -> triggers retry path."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        assert inj.phase == InjectorPhase.ADJUSTING
+        assert inj.press_budget == 7
+        # Simulate exceeding budget
+        inj.presses_consumed = 8
+        inj.budget_exceeded()
+        assert inj.phase == InjectorPhase.RETRYING
+
+    def test_budget_resets_on_retry(self):
+        """After retry and re-probe, budget recalculated from fresh delta."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        assert inj.press_budget == 7
+        inj.presses_consumed = 8
+        inj.budget_exceeded()
+        inj.complete_retrying()
+        # Re-probe reveals 97 this time (different from original 95)
+        inj.complete_probe(97)
+        assert inj.press_budget == 5  # abs(100-97) + 2
+
+
+class TestBudgetExceededRetry:
+    """Test that budget exceeded follows retry flow."""
+
+    def test_budget_exceeded_goes_to_retrying(self):
+        """budget_exceeded() transitions to RETRYING when retries remain."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.presses_consumed = 8
+        inj.budget_exceeded()
+        assert inj.phase == InjectorPhase.RETRYING
+        assert inj.retry_count == 1
+
+    def test_budget_exceeded_with_no_retries_left_fails(self):
+        """budget_exceeded() when retry_count >= max_retries -> FAILED."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.retry_count = 3  # All retries used
+        inj.presses_consumed = 8
+        inj.budget_exceeded()
+        assert inj.phase == InjectorPhase.COOLDOWN
+        assert inj.last_command_result == InjectorResult.FAILED
+
+    def test_budget_exceeded_increments_retry_count(self):
+        """budget_exceeded follows same retry counting as timeout."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        assert inj.retry_count == 0
+        inj.presses_consumed = 8
+        inj.budget_exceeded()
+        assert inj.retry_count == 1
+
+
+class TestResultSensors:
+    """Test result sensor values through the sequence lifecycle."""
+
+    def test_initial_result_is_none(self):
+        inj = SimulatedInjector()
+        assert inj.last_command_result == InjectorResult.NONE
+
+    def test_success_result(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.feed_temperature(100)
+        assert inj.last_command_result == InjectorResult.SUCCESS
+
+    def test_timeout_result_during_retry(self):
+        """After timeout (retries remain), last_result is TIMEOUT."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.last_result == InjectorResult.TIMEOUT
+
+    def test_failed_result(self):
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.last_command_result == InjectorResult.FAILED
+
+    def test_retry_count_published_on_retry(self):
+        """retry_count increments and is accessible."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.retry_count == 1
+        inj.complete_retrying()
+        inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.retry_count == 2
+
+
+class TestDeferredSetpoint:
+    """Test deferred setpoint publish pattern (D-14)."""
+
+    def test_control_does_not_publish_immediately(self):
+        """control_setpoint(100) -> published_setpoint is NOT 100."""
+        inj = SimulatedInjector()
+        inj.published_setpoint = 95.0
+        inj.known_setpoint = 95.0
+        inj.control_setpoint(100)
+        assert inj.published_setpoint != 100
+        assert inj.published_setpoint == 95.0
+
+    def test_success_publishes_confirmed(self):
+        """After full successful sequence, published_setpoint == target."""
+        inj = SimulatedInjector()
+        inj.published_setpoint = 95.0
+        inj.known_setpoint = 95.0
+        inj.control_setpoint(100)
+        inj.run_to_verify()
+        inj.feed_temperature(100)
+        assert inj.published_setpoint == 100
+
+    def test_failed_reverts_setpoint(self):
+        """control_setpoint(100) from known 95. Exhaust retries -> published_setpoint == 95."""
+        inj = SimulatedInjector()
+        inj.published_setpoint = 95.0
+        inj.known_setpoint = 95.0
+        inj.control_setpoint(100)
+        assert inj.last_confirmed_setpoint == 95.0
+        # Exhaust all retries
+        for _ in range(3):
+            inj.run_to_verify()
+            inj.timeout()
+            inj.complete_retrying()
+            inj.complete_probe(95)
+        inj.run_to_verify()
+        inj.timeout()
+        assert inj.published_setpoint == 95.0
+
+    def test_last_confirmed_setpoint_updated_on_success(self):
+        """After SUCCESS, last_confirmed_setpoint == target."""
+        inj = SimulatedInjector()
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        inj.run_to_verify()
+        inj.feed_temperature(100)
+        assert inj.last_confirmed_setpoint == 100
+
+    def test_rejected_request_keeps_current(self):
+        """If request_temperature returns False (busy), published_setpoint unchanged."""
+        inj = SimulatedInjector()
+        inj.published_setpoint = 95.0
+        inj.known_setpoint = 95.0
+        inj.request_temperature(100)
+        # Now busy -- second request rejected
+        result = inj.control_setpoint(104)
+        assert result is False
+        assert inj.published_setpoint == 95.0
 
 
 class TestYamlButtonConfig:

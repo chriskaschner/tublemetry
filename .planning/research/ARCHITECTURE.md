@@ -1,485 +1,324 @@
 # Architecture Patterns
 
-**Domain:** Closed-loop embedded control + Home Assistant integration
-**Researched:** 2026-04-12
+**Domain:** ESP32-based hot tub automation with button injection, RS-485 display reading, and Home Assistant integration
+**Researched:** 2026-03-13
 
-## Current Architecture (As-Is)
+## Recommended Architecture
 
-```
-+------------------------------------------------------------------+
-|                          Home Assistant (RPi4)                     |
-|                                                                    |
-|  [TOU Automation]     [Thermal Runaway]     [Heating Tracker]     |
-|       |                     |                     |                |
-|       v                     v                     v                |
-|  number.set_value      system_log.write    input_number.set_value |
-|       |                     |                     |                |
-|       +----> ESPHome Native API <----+             |                |
-|              (persistent TCP)        |             |                |
-|                    |                 |             |                |
-|  [SQL Sensors] -- SQLite DB    [Template Sensors]                  |
-|  (heating/cooling rates)       (preheat ETA, outdoor temp)         |
-+------------------------------------------------------------------+
-                    |
-                    | ESPHome Native API (protobuf over TCP)
-                    |
-+------------------------------------------------------------------+
-|                   ESP32 (ESPHome firmware)                         |
-|                                                                    |
-|  [ISR: clock_isr_]  --> FrameData (volatile)                      |
-|       |                                                            |
-|  [TublemetryDisplay::loop()]                                       |
-|       |                                                            |
-|       +--> process_frame_() --> decode_7seg_()                     |
-|       |         |                                                  |
-|       |         +--> classify_display_state_()                     |
-|       |         |         |                                        |
-|       |         |         +--> publish temperature sensor          |
-|       |         |         +--> publish setpoint (set-mode detect)  |
-|       |         |         +--> feed_display_temperature() to       |
-|       |         |              ButtonInjector                      |
-|       |         |                                                  |
-|       |         +--> publish heater/pump/light binary sensors      |
-|       |                                                            |
-|  [ButtonInjector::loop()]  <-- state machine                       |
-|       |  Phases: IDLE -> PROBING -> ADJUSTING -> VERIFYING ->     |
-|       |          COOLDOWN                                          |
-|       |                                                            |
-|  [TublemetrySetpoint::control()] <-- number entity from HA        |
-|       +--> injector->request_temperature()                         |
-+------------------------------------------------------------------+
-                    |
-                    | GPIO (photorelays + clock/data)
-                    |
-+------------------------------------------------------------------+
-|                   Balboa VS300FL4 Controller                       |
-|  [Display bus: 24-bit sync clock+data @ 60Hz]                     |
-|  [Button lines: analog, bridged by AQY212EH photorelays]          |
-+------------------------------------------------------------------+
-```
-
-## Recommended Architecture (To-Be)
-
-### Question 1: Where Does Retry Logic Live?
-
-**Answer: Primarily in the C++ ButtonInjector, with HA as escalation layer.**
-
-The retry loop belongs in firmware because:
-
-1. **Timing sensitivity.** The ButtonInjector already operates a non-blocking state machine (PROBING -> ADJUSTING -> VERIFYING -> COOLDOWN) with sub-second timing. Retry needs the same tight coupling to the display decode pipeline -- `feed_display_temperature()` is called every frame (~60Hz). HA automations poll at 1-second minimum granularity and add network round-trip latency.
-
-2. **State ownership.** The ButtonInjector owns `known_setpoint_`, `last_display_temp_`, `probed_setpoint_`, and all the phase transitions. Having HA re-issue commands after timeout means HA would need to understand whether the injector is mid-sequence, which violates encapsulation.
-
-3. **Memory/compute is fine.** Retry is a counter + state transition, not a memory-intensive operation. The ESP32-WROOM-32 has ~160KB usable DRAM; the current component uses negligible RAM (a few hundred bytes of state). Adding a retry counter and attempt tracking adds maybe 20 bytes.
-
-**Specific firmware changes:**
+The system is a **bridge architecture**: an ESP32 running ESPHome sits between the Balboa VS300FL4 control board and Home Assistant, translating HA climate commands into analog button presses (write path) and RS-485 display data into temperature readings (read path). The hot tub board remains unmodified -- the ESP32 is a passive tap with isolated injection capability.
 
 ```
-ButtonInjector additions:
-  - uint8_t retry_count_{0}
-  - uint8_t max_retries_{2}        // configurable from YAML
-  - InjectorResult -> add RETRY_EXHAUSTED
-  - finish_sequence_(): on TIMEOUT, if retry_count_ < max_retries_,
-    re-enter PROBING (setpoint now unknown), increment retry_count_
-  - On SUCCESS or RETRY_EXHAUSTED, reset retry_count_ to 0
++-------------------+       WiFi/API        +-------------------+
+|  Home Assistant   | <-------------------> |    ESP32 + ESPHome |
+|  (climate entity) |                       |    (bridge node)   |
++-------------------+                       +--------+----------+
+                                                     |
+                              +----------------------+----------------------+
+                              |                                             |
+                     GPIO + Photorelay                              UART + MAX485
+                     (write path)                                   (read path)
+                              |                                             |
+                     +--------v----------+                         +--------v----------+
+                     | RJ45 Button Pins  |                         | RJ45 RS-485 Pins  |
+                     | Pin 2: Temp Up    |                         | Pin 5: Display Data|
+                     | Pin 8: Temp Down  |                         | Pin 6: Display Clk |
+                     | Pin 3: Lights     |                         +--------------------+
+                     | Pin 7: Jets       |                                    |
+                     +-------------------+                         +----------v---------+
+                              |                                    | VS300FL4 Board     |
+                              +------>  VS300FL4 Board  <----------+ (sends display     |
+                                        (reads ADC)                |  data to panel)    |
+                                                                   +--------------------+
 ```
 
-**HA's role is escalation, not retry:**
+### Component Boundaries
 
-```
-HA automation (new):
-  trigger: esphome.setpoint_command_result event
-  condition: result == "retry_exhausted" or result == "timeout"
-  action:
-    - persistent_notification.create (alert user)
-    - Optionally: wait 5 min, re-send the same number.set_value
-```
+| Component | Responsibility | Communicates With |
+|-----------|---------------|-------------------|
+| **Home Assistant** | User interface, TOU automation scheduling, climate entity display | ESPHome via native API over WiFi |
+| **ESPHome Firmware** | Climate entity logic, button press sequencing, re-home algorithm, temperature state management | HA (API), GPIO outputs (photorelays), UART (MAX485) |
+| **GPIO Output Layer** | Momentary pulse generation for button simulation via photorelays | ESPHome firmware (receives commands), RJ45 button pins (drives analog lines) |
+| **RS-485 Read Layer** | Receive and decode synchronous display stream from board | ESPHome firmware (provides decoded temperature), MAX485 transceiver, RJ45 pins 5/6 |
+| **Photorelay Circuit** | Galvanic isolation between ESP32 3.3V domain and hot tub 5V analog domain | GPIO output (LED side), RJ45 button pins (switch side) |
+| **MAX485 Transceiver** | Level shifting and RS-485 bus interface for reading display stream | ESP32 UART RX, RJ45 pins 5/6 |
+| **VS300FL4 Board** | Hot tub control -- heater, pump, display. Completely unmodified. | Panel (RJ45), ESP32 tap (passive) |
+| **VL-series Panel** | Physical buttons and 7-segment display. Stays connected, undisturbed. | VS300FL4 board (RJ45) |
 
-The ESP32 fires a `homeassistant.event` (via `CustomAPIDevice::fire_homeassistant_event()`) after each completed sequence with structured data: `{result: "success"|"timeout"|"retry_exhausted", target: 104, attempts: 3}`. This requires:
-- Adding `api: homeassistant_services: true` to the YAML (already effectively true since HA actions are used)
-- Having ButtonInjector inherit from or access a `CustomAPIDevice` instance to fire events
-- Alternative (simpler): expose result as a text_sensor that HA triggers on
+### Data Flow
 
-**Recommended simpler approach:** Expose `last_result` and `last_target` as ESPHome sensors (text_sensor for result, sensor for target). HA automations trigger on state change of the result sensor. No need for `CustomAPIDevice` inheritance -- just add two more sensor publications in `finish_sequence_()`. This avoids any C++ API dependency changes.
+**Command Path (Home Assistant to Hot Tub):**
 
-```
-New sensors in tublemetry.yaml:
-  text_sensor:
-    - platform: tublemetry_display
-      injection_result:
-        name: "Hot Tub Injection Result"   # "success" | "timeout" | "retry_exhausted"
-      injection_target:
-        name: "Hot Tub Injection Target"   # "104" etc.
-  sensor:
-    - platform: tublemetry_display
-      injection_attempts:
-        name: "Hot Tub Injection Attempts"  # numeric counter
-```
+1. HA automation calls `climate.set_temperature` with target (e.g., 104F)
+2. ESPHome climate entity receives target via native API
+3. Climate component calculates press count: `abs(target - current_setpoint)` presses of Temp Up or Temp Down
+4. **Re-home strategy** (if no verified current setpoint): slam 25x Temp Down to guaranteed floor (80F), then count up to target
+5. For each press: GPIO HIGH (680ms typical) -> photorelay closes -> +5V bridges to button pin -> board reads ADC spike -> GPIO LOW
+6. Inter-press delay (empirically determined, ~300-500ms expected) between each press
+7. ESPHome updates internal setpoint state after sequence completes
 
-### Question 2: Data Pipeline -- Getting History to Mac for Analysis
+**Status Path (Hot Tub to Home Assistant):**
 
-**Answer: Pull via HA REST API for short-term; SCP the SQLite DB for deep analysis.**
+Phase 1 (open-loop): No read path. ESPHome tracks setpoint via internal counter only.
 
-Three options evaluated:
+Phase 2 (closed-loop):
+1. VS300FL4 board sends 7-segment display data on Pin 5 at 60Hz, clocked by Pin 6
+2. MAX485 transceiver converts RS-485 differential to TTL for ESP32 UART RX
+3. ESPHome custom component decodes 8-byte frames, extracts temperature-dependent byte (position 3)
+4. 7-segment lookup table maps byte value to display digit
+5. Decoded temperature published as `current_temperature` on the climate entity
+6. HA displays actual temperature alongside setpoint
 
-| Approach | Pros | Cons | Verdict |
-|----------|------|------|---------|
-| **HA REST API `/api/history/period`** | No DB access needed, works over network, supports `filter_entity_id` and `minimal_response` | Limited to recorder retention (default 10 days), no long-term statistics, JSON not CSV | Good for recent operational checks |
-| **SCP the SQLite DB** | Full history, supports the existing `analyze_heating.py` script, SQL flexibility | Requires SSH/SCP access to RPi, DB may be locked during write | Best for deep analysis |
-| **Push to external DB (InfluxDB/TimescaleDB)** | Always-on time-series, Grafana integration, no SCP needed | New infrastructure to maintain, RPi4 may not have resources for another DB, complexity | Overkill for single-user system |
+**Automation Path (TOU Schedule):**
 
-**Recommendation: Two-tier approach.**
-
-**Tier 1 -- Automated daily export (new):**
-A Python script on the Mac that pulls recent data via the HA REST API:
-
-```python
-# scripts/pull_ha_history.py
-# Uses: requests, pandas
-# Auth: Long-lived access token
-# Pulls: last N days of entity history via /api/history/period
-# Outputs: CSV per entity or single merged DataFrame
-```
-
-This replaces the need to SCP the DB for routine checks. The REST API returns JSON arrays of state changes; the script converts to CSV. Limited to recorder retention window (configure HA to keep 30 days for hot tub entities).
-
-**Tier 2 -- SCP for deep analysis (existing pattern, improved):**
-
-```bash
-# Already documented in analyze_heating.py:
-scp homeassistant@homeassistant.local:/config/home-assistant_v2.db ./ha.db
-uv run scripts/analyze_heating.py --db ./ha.db --csv out.csv --plot
-```
-
-Enhance `analyze_heating.py` to also accept REST API JSON as input (alternative to SQLite), so the same analysis code works with both data sources.
-
-**Why NOT InfluxDB:** The user runs HA OS on an RPi4 with an SD card. InfluxDB's write amplification would shorten SD card life and consume resources the Pi can't spare. The hot tub generates ~10 state changes per minute across all entities -- trivial for SQLite, but InfluxDB on RPi4 is a known pain point in the HA community.
-
-**Long-term statistics note:** HA's WebSocket API supports `recorder/statistics_during_period` for long-term hourly aggregates. If needed later, a script can use `websockets` + `homeassistant-api` Python packages to pull these. Not needed for MVP.
-
-### Question 3: Enphase Power Correlation with Heater State
-
-**Answer: Template binary sensor in HA comparing whole-home power against a threshold.**
-
-The hot tub has a 4kW heater on 240V. When it turns on, whole-home consumption jumps by ~4000W. The Enphase Envoy integration exposes `sensor.envoy_SERIAL_current_power_consumption` (whole-home watts, real-time). The approach:
-
-**Step 1: Create a power-derived heater binary sensor:**
-
-```yaml
-# ha/templates.yaml (add to existing)
-- binary_sensor:
-    - name: "Hot Tub Heater (Power)"
-      device_class: power
-      # True when whole-home consumption exceeds baseline by heater-sized amount
-      state: >
-        {% set power = states('sensor.envoy_SERIAL_current_power_consumption') | float(0) %}
-        {% set baseline = states('input_number.home_baseline_watts') | float(500) %}
-        {{ power > baseline + 3000 }}
-      delay_on:
-        seconds: 30
-      delay_off:
-        seconds: 30
-```
-
-The `delay_on`/`delay_off` filters prevent flicker from brief power spikes (microwave, HVAC). The 30-second window is appropriate because the hot tub heater runs in sustained 10-60 minute cycles.
-
-**Step 2: Cross-validate with display-decoded heater state:**
-
-```yaml
-# ha/templates.yaml (add to existing)
-- binary_sensor:
-    - name: "Hot Tub Heater Mismatch"
-      # True = the two heater signals disagree for > 2 minutes
-      state: >
-        {% set display_heater = is_state('binary_sensor.tublemetry_hot_tub_heater', 'on') %}
-        {% set power_heater = is_state('binary_sensor.hot_tub_heater_power', 'on') %}
-        {{ display_heater != power_heater }}
-      delay_on:
-        minutes: 2
-```
-
-**Why template sensor, not automation:**
-
-- Template sensors are continuously evaluated and produce a time series in the recorder. This means the power-derived heater state is available for historical analysis alongside the display-decoded heater state.
-- An automation would fire once and log once, losing the continuous correlation data.
-- Template sensors compose: the mismatch sensor references the power sensor, which references the Envoy sensor. Clean dependency chain.
-
-**Baseline calibration:** The `input_number.home_baseline_watts` helper stores the typical non-tub household load. Start at 500W, refine from data. A future enhancement could auto-calibrate by observing the delta when the display-decoded heater turns on/off.
-
-**Entity ID mapping needed:** The user needs to identify their actual Enphase sensor entity ID. It follows the pattern `sensor.envoy_SERIAL_current_power_consumption` where SERIAL is the Envoy gateway's serial number. Check HA Developer Tools > States and search for "envoy".
-
-### Question 4: Sensor Fusion / Cross-Validation -- Firmware or HA?
-
-**Answer: HA, not firmware.**
-
-Sensor fusion for this system means comparing independent signals to detect faults:
-- Display-decoded heater state vs. power-derived heater state
-- Display-decoded temperature vs. expected temperature given heater runtime
-- Setpoint command result vs. actual displayed setpoint after timeout
-
-**All of this belongs in HA because:**
-
-1. **The ESP32 doesn't have the Enphase data.** Power monitoring comes from a completely separate network device (Enphase Envoy via its own integration). The ESP32 would need to subscribe to HA entities via the native API to get this data, which adds fragile coupling and uses API bandwidth.
-
-2. **Template sensors are the right abstraction.** HA's template engine is built for exactly this -- combining state from multiple devices into derived sensors. The mismatch detector (Q3 above) is a clean example.
-
-3. **Recorder provides the audit trail.** When sensors disagree, you want the history. HA's recorder stores every state change for template sensors automatically. On the ESP32, you'd need to implement logging, which is limited to serial output or the ESPHome logger (no persistent storage).
-
-4. **Firmware should be dumb and reliable.** The ESP32's job is: decode display frames, inject button presses, report raw state. It should not make policy decisions based on cross-device sensor data. Keep the firmware's responsibility surface small.
-
-**What DOES belong in firmware:**
-- The retry logic (Q1) -- because it's internal to the button injection state machine
-- Watchdog / sanity checks on the display decode pipeline (e.g., "no frames received for 60s = mark sensor unavailable")
-- Safety floor/ceiling clamping on `request_temperature()` (already implemented: 80-104F range)
-
-**New HA template sensors for cross-validation:**
-
-| Sensor | Inputs | Purpose |
-|--------|--------|---------|
-| `binary_sensor.hot_tub_heater_power` | Enphase consumption sensor | Independent heater state from power |
-| `binary_sensor.hot_tub_heater_mismatch` | Display heater + power heater | Fault detection |
-| `sensor.hot_tub_heater_agreement_pct` | Both heater signals over time | Confidence metric |
-| `binary_sensor.hot_tub_display_stale` | `last_update` sensor age | ESP32 communication health |
-
-### Question 5: ESP32 vs. HA Responsibility Boundary
-
-**Answer: ESP32 owns real-time hardware interaction. HA owns policy, correlation, and persistence.**
-
-```
-+---------------------------+----------------------------------+
-|     ESP32 Responsibility   |     HA Responsibility            |
-+---------------------------+----------------------------------+
-| ISR-driven frame decode   | TOU schedule (when to heat)      |
-| 7-segment lookup          | Retry escalation (after firmware  |
-| Stability filtering       |   retries exhausted)             |
-| Set-mode detection        | Thermal runaway protection       |
-| Button press timing       | Power-based heater validation    |
-| Press-verify-retry loop   | Sensor fusion / cross-validation |
-| Setpoint caching          | Data persistence (recorder)      |
-| Safety clamping (80-104F) | Data export (REST API / scripts) |
-| Heater/pump/light status  | Dashboard visualization          |
-|   bit extraction          | Notification / alerting          |
-| Publish raw state to HA   | Thermal model (heating/cooling   |
-|                           |   rate computation via SQL)      |
-+---------------------------+----------------------------------+
-```
-
-**The boundary principle:** If it needs sub-second timing or direct GPIO access, it's firmware. If it needs data from multiple devices, persistent storage, or user-facing policy, it's HA.
-
-**MQTT is NOT needed.** The ESPHome native API provides everything required:
-- Bidirectional: HA sends `number.set_value`, ESP32 publishes sensor states
-- Real-time: persistent TCP connection, push-based updates, no polling
-- Structured: sensor/number/binary_sensor/text_sensor entities are first-class
-- Events: `homeassistant.event` or sensor state changes for command results
-
-MQTT would only be needed if: (a) you wanted non-HA consumers of the data stream, (b) you needed store-and-forward during HA downtime, or (c) you were integrating with a third-party system. None of these apply.
-
-## Component Boundaries (New + Modified)
-
-| Component | Location | Status | Responsibility |
-|-----------|----------|--------|----------------|
-| `tublemetry_display.cpp` | ESP32 | **Existing** | Frame decode, state classification, sensor publish |
-| `button_injector.cpp` | ESP32 | **Modify** | Add retry loop, expose result/attempt sensors |
-| `tublemetry_setpoint.cpp` | ESP32 | **Existing** | Number entity, delegates to injector |
-| `tou_automation.yaml` | HA | **Existing** | TOU schedule, setpoint commands |
-| `thermal_runaway.yaml` | HA | **Existing** | Safety: overshoot detection |
-| `sensors.yaml` | HA | **Existing** | SQL sensors for thermal model |
-| `templates.yaml` | HA | **Modify** | Add power-derived heater, mismatch, stale detector |
-| `command_monitor.yaml` | HA | **New** | React to injection result sensors (escalation) |
-| `pull_ha_history.py` | Mac | **New** | REST API data export script |
-| `analyze_heating.py` | Mac | **Modify** | Accept REST API JSON input alongside SQLite |
-
-## Data Flow (New Capabilities)
-
-### Command-Verify-Retry Flow
-
-```
-HA TOU automation
-  |
-  v
-number.set_value(104)
-  |
-  v (ESPHome native API)
-TublemetrySetpoint::control(104)
-  |
-  v
-ButtonInjector::request_temperature(104)
-  |
-  v
-[PROBING] -> display shows current SP
-  |
-  v
-[ADJUSTING] -> N presses up/down
-  |
-  v
-[VERIFYING] -> wait for display == 104
-  |                    |
-  | (match)            | (timeout, retries < max)
-  v                    v
-[SUCCESS]         [retry: re-enter PROBING]
-  |                    |
-  | publish            | (timeout, retries >= max)
-  | text_sensor:       v
-  | "success"     [RETRY_EXHAUSTED]
-  |                    |
-  v                    | publish text_sensor: "retry_exhausted"
-[COOLDOWN]             v
-                  [COOLDOWN]
-                       |
-                       v (HA sees text_sensor change)
-                  command_monitor.yaml fires
-                       |
-                       v
-                  persistent_notification + optional re-attempt
-```
-
-### Power Correlation Flow
-
-```
-Enphase Envoy (network device)
-  |
-  v (Enphase integration, native polling)
-sensor.envoy_SERIAL_current_power_consumption  (watts)
-  |
-  v (HA template sensor)
-binary_sensor.hot_tub_heater_power  (on if watts > baseline + 3000)
-  |
-  +------+
-  |      |
-  v      v
-  |  binary_sensor.tublemetry_hot_tub_heater  (from display decode)
-  |      |
-  v      v
-binary_sensor.hot_tub_heater_mismatch  (disagree > 2 min)
-  |
-  v (if mismatch persists)
-automation: alert + log
-```
-
-### Data Export Flow
-
-```
-Tier 1 (routine):
-  Mac                           RPi4 (HA)
-  pull_ha_history.py  -------> /api/history/period
-       |              <------- JSON response
-       v
-  pandas DataFrame -> CSV -> analyze_heating.py
-
-Tier 2 (deep analysis):
-  Mac                           RPi4 (HA)
-  scp                 -------> /config/home-assistant_v2.db
-       |              <------- SQLite file
-       v
-  analyze_heating.py --db ./ha.db --csv --plot
-```
+1. HA time-based automation triggers at schedule boundaries (e.g., weekday 10am)
+2. Automation calls `climate.set_temperature` with on-peak setpoint (99F) or off-peak setpoint (104F)
+3. Climate entity on ESP32 executes button press sequence (as above)
+4. Optional: Phase 2 verification reads display to confirm setpoint was applied correctly
 
 ## Patterns to Follow
 
-### Pattern 1: Firmware State Machine with HA Observation
+### Pattern 1: ESPHome External Component for Custom Climate
 
-**What:** Keep complex real-time logic in firmware as a non-blocking state machine. Expose phase, result, and diagnostic data as ESPHome sensors. HA observes and reacts to state changes.
+**What:** Implement the hot tub interface as an ESPHome external component (not deprecated "custom component"). This is a C++ class that extends `esphome::climate::Climate` and `esphome::Component`, with Python config validation in `__init__.py`.
 
-**When:** Any hardware interaction requiring tight timing (button presses, display decode, relay control).
+**Why:** The brianfeucht/esphome-balboa-spa project and Ylianst/ESP-IQ2020 both use this pattern successfully. It provides native HA integration, OTA updates, and YAML configuration -- the standard approach for non-trivial ESPHome hardware integrations.
 
-**Why:** Decouples real-time control from network-dependent policy. The ESP32 works correctly even if HA is temporarily unreachable (API reboot_timeout handles extended disconnection).
-
-### Pattern 2: Template Sensor Composition for Cross-Device Logic
-
-**What:** Derive higher-order state from multiple device sensors using HA template sensors. Chain template sensors for layered logic.
-
-**When:** Combining data from ESP32 display decode + Enphase power monitoring + weather data.
-
-**Example:**
-```yaml
-# Layer 1: raw device data (existing)
-binary_sensor.tublemetry_hot_tub_heater     # from ESP32
-sensor.envoy_SERIAL_current_power_consumption  # from Enphase
-
-# Layer 2: derived state (new)
-binary_sensor.hot_tub_heater_power          # threshold on power
-
-# Layer 3: cross-validation (new)
-binary_sensor.hot_tub_heater_mismatch       # compare layers
-
-# Layer 4: policy (existing pattern)
-automation: thermal_runaway  # act on layer 3
+**Structure:**
+```
+esphome/
+  tubtron.yaml              # Main ESPHome config
+  components/
+    tubtron/
+      __init__.py            # Python: CONFIG_SCHEMA, to_code()
+      climate.py             # Python: climate platform registration
+      tubtron_climate.h      # C++: class declaration
+      tubtron_climate.cpp    # C++: implementation
 ```
 
-### Pattern 3: Publish-on-Change with Diagnostic Counters
+**When:** Use this pattern from the start. Even Phase 1 (open-loop button injection) benefits from the climate entity abstraction.
 
-**What:** Only publish sensor state when it actually changes (avoid database bloat), but expose cumulative counters for diagnostics.
+**Example (climate class skeleton):**
+```cpp
+// tubtron_climate.h
+#pragma once
+#include "esphome/components/climate/climate.h"
+#include "esphome/core/component.h"
+#include "esphome/components/output/binary_output.h"
 
-**When:** High-frequency internal state (60Hz frame decode) that would overwhelm HA's recorder if published every tick.
+namespace esphome {
+namespace tubtron {
 
-**Already implemented for:** display_string, raw_hex, heater/pump/light binary sensors.
+class TubtronClimate : public climate::Climate, public Component {
+ public:
+  void setup() override;
+  void loop() override;
 
-**Extend to:** injection result, injection attempts counter, retry count.
+  climate::ClimateTraits traits() override;
+  void control(const climate::ClimateCall &call) override;
+
+  void set_temp_up_output(output::BinaryOutput *output) { temp_up_ = output; }
+  void set_temp_down_output(output::BinaryOutput *output) { temp_down_ = output; }
+
+ protected:
+  void press_button_(output::BinaryOutput *button, int count);
+  void rehome_and_set_(float target);
+
+  output::BinaryOutput *temp_up_{nullptr};
+  output::BinaryOutput *temp_down_{nullptr};
+
+  float assumed_setpoint_{80.0f};  // Floor after re-home
+  uint32_t press_duration_ms_{500};
+  uint32_t inter_press_delay_ms_{400};
+};
+
+}  // namespace tubtron
+}  // namespace esphome
+```
+
+**Confidence:** HIGH -- this is the documented ESPHome pattern for custom hardware.
+
+### Pattern 2: GPIO Output with Momentary Pulse for Button Injection
+
+**What:** Use ESPHome's `output::BinaryOutput` (GPIO platform) to drive photorelay LEDs. Each "button press" is a timed pulse: HIGH for press duration, LOW for inter-press gap.
+
+**Why:** ESPHome's GPIO output component handles pin initialization, safe boot states (off), and integrates cleanly with automation sequences. The photorelay (AQY212EH) provides galvanic isolation -- the ESP32 only drives the LED input side, never touches the 5V analog lines directly.
+
+**When:** All button injection, all phases.
+
+**Example (YAML for GPIO outputs):**
+```yaml
+output:
+  - platform: gpio
+    id: temp_up_relay
+    pin: GPIO18
+    inverted: false
+
+  - platform: gpio
+    id: temp_down_relay
+    pin: GPIO19
+    inverted: false
+
+  - platform: gpio
+    id: lights_relay
+    pin: GPIO21
+    inverted: false
+
+  - platform: gpio
+    id: jets_relay
+    pin: GPIO22
+    inverted: false
+```
+
+**Confidence:** HIGH -- standard ESPHome GPIO pattern, well-documented.
+
+### Pattern 3: Re-Home Strategy for Open-Loop Setpoint Control
+
+**What:** Before setting a new target temperature, slam Temp Down 25 times to guarantee the setpoint is at the floor (80F), then press Temp Up `(target - 80)` times to reach the desired setpoint. This eliminates cumulative drift.
+
+**Why:** Without display reading (Phase 1), the ESP32 cannot verify what temperature the tub is currently set to. Manual adjustments at the panel, missed button presses, or power cycles silently desync the internal state. Re-homing on every setpoint change is expensive (~50 presses for a 99->104 change instead of 5) but guaranteed correct.
+
+**When:** Phase 1 (open-loop) always. Phase 2 (closed-loop) can skip re-home when display confirms current setpoint.
+
+**Optimization:** The re-home can be optimized by holding the button -- the Balboa board auto-repeats when a button is held for >2 seconds. This needs empirical timing characterization (Phase 1 Task 3).
+
+**Confidence:** MEDIUM -- the strategy is sound but press timing and auto-repeat behavior need empirical validation.
+
+### Pattern 4: Phased Read Path (Phase 2 Extension)
+
+**What:** Add RS-485 display reading as a separate component that feeds `current_temperature` into the existing climate entity. The read path is independent of the write path.
+
+**Why:** The MagnusPer/Balboa-GS510SZ project shows that synchronous clock+data display protocols require interrupt-driven or tight-loop decoding. This is complex and should not block the functional write path. The brianfeucht/esphome-balboa-spa project demonstrates the multi-component pattern where read and write paths are loosely coupled.
+
+**When:** Phase 2, after open-loop control is proven working.
+
+**Architecture for read path:**
+```
+Pin 6 (clock) --> MAX485 --> ESP32 GPIO interrupt (rising edge)
+Pin 5 (data)  --> MAX485 --> ESP32 UART RX (read on clock edge)
+```
+
+The GS510SZ reference uses 50Hz cycles with 39-bit chunks. The VS300FL4 uses 60Hz cycles with 8-byte frames. The decoding logic must handle:
+- Frame synchronization (detect start of 8-byte frame)
+- 7-segment byte-to-digit lookup (resolved by temperature ladder capture)
+- Status flag extraction (FE byte presence, burst patterns)
+
+**Confidence:** MEDIUM -- the general approach is validated by GS510SZ, but VS-series protocol differences mean the decoding logic is custom.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: HA Automation as Retry Loop
+### Anti-Pattern 1: Using ESPHome's Built-in Thermostat Climate Controller
 
-**What:** Using HA automations with `delay` + `repeat` to retry setpoint commands.
+**What:** ESPHome's `thermostat` platform expects to directly control a heater relay with hysteresis, deadband, and PID-like logic.
 
-**Why bad:** HA automation delays are not precise (1-second granularity minimum). The delay between "send command" and "check result" introduces a network round-trip where the display state could change. The ButtonInjector already has sub-100ms timing; HA cannot match this.
+**Why bad:** The hot tub board manages its own heating loop. The ESP32 only changes the setpoint -- it does not control the heater directly. Using the thermostat platform would fight the board's built-in control logic and add unnecessary complexity.
 
-**Instead:** Firmware retry (Q1 above). HA only handles escalation after firmware retries are exhausted.
+**Instead:** Use a bare `climate::Climate` subclass that exposes `target_temperature` and `current_temperature` without any heating/cooling control logic. The ESP32 is a remote control, not a thermostat.
 
-### Anti-Pattern 2: Polling ESP32 for Enphase Data
+### Anti-Pattern 2: Bare GPIO Without Isolation
 
-**What:** Having the ESP32 subscribe to HA entities (via `homeassistant` sensor platform) to get Enphase power data, then doing cross-validation in firmware.
+**What:** Driving button pins directly from ESP32 GPIO (3.3V) without photorelays.
 
-**Why bad:** Adds ~500ms latency per state update over the API. Consumes API bandwidth. Makes the ESP32 dependent on HA being available for safety logic. Increases firmware complexity for logic that HA template sensors handle natively.
+**Why bad:** The VS300FL4 button lines are sensitive analog circuits. An unterminated cable already caused phantom presses. Direct GPIO connection introduces shared ground paths, voltage mismatch (3.3V vs 5V), and EMI coupling from the ESP32's WiFi radio.
 
-**Instead:** All cross-device logic in HA template sensors. ESP32 publishes raw state only.
+**Instead:** Always use photorelays (AQY212EH) for galvanic isolation. The LED side is on the ESP32 3.3V domain; the switch side is on the tub's 5V domain. No shared ground, no coupling.
 
-### Anti-Pattern 3: External Time-Series Database on RPi4
+### Anti-Pattern 3: Polling RS-485 Display at Fixed Intervals
 
-**What:** Running InfluxDB or TimescaleDB on the RPi4 alongside HA for historical analysis.
+**What:** Reading the RS-485 display stream by polling UART at a fixed timer interval.
 
-**Why bad:** RPi4 on SD card has limited I/O. InfluxDB's write amplification degrades SD card life. Added maintenance burden for a single-user system with ~10 state changes/minute. The existing SQLite recorder + SCP workflow already works.
+**Why bad:** The VS300FL4 uses a synchronous clock+data protocol. Pin 6 is the clock signal and Pin 5 carries data, both running at 60Hz. Polling at a fixed interval will miss frames, read partial data, and produce garbage. This is not an async UART stream you can read whenever -- it is a clocked synchronous signal.
 
-**Instead:** Pull data via REST API (Tier 1) or SCP the SQLite DB (Tier 2). Run analysis on the Mac where resources are abundant.
+**Instead:** Use interrupt-driven reading triggered by Pin 6 clock edges, or use ESPHome's UART component with careful frame synchronization. The MagnusPer project handles this by synchronizing reads to the clock signal.
+
+### Anti-Pattern 4: Stateful Setpoint Tracking Without Verification
+
+**What:** Tracking the setpoint by incrementing/decrementing a counter on each button press without any re-home or verification mechanism.
+
+**Why bad:** Every missed press, manual panel adjustment, or power cycle silently desynchronizes the counter. Over days or weeks, drift accumulates. The automation sends 5 presses thinking it's going from 99F to 104F, but the tub is actually at 97F (missed 2 presses earlier) and ends up at 102F.
+
+**Instead:** Re-home on every setpoint change (Phase 1), or verify via display reading (Phase 2).
+
+### Anti-Pattern 5: Monolithic Firmware
+
+**What:** Putting all logic (button injection, display decoding, climate entity, automation) into a single ESPHome YAML file with inline lambdas.
+
+**Why bad:** The button injection timing, display protocol decoding, and climate state machine are each complex enough to warrant separate components. Inline lambdas become unmaintainable and untestable beyond ~20 lines.
+
+**Instead:** Use the external component pattern with separate C++ files. The climate entity, GPIO output abstraction, and RS-485 decoder should be distinct classes with clear interfaces.
 
 ## Scalability Considerations
 
-Not applicable in the traditional sense (single hot tub, single user), but relevant for **data volume and system health:**
+This is a single-installation project. Scalability is not a primary concern, but the architecture should support:
 
-| Concern | Current | With New Features |
-|---------|---------|-------------------|
-| ESP32 RAM | ~54KB used / 320KB total (16.6%) | +20 bytes for retry state, negligible |
-| ESP32 Flash | Near limit with many ESPHome components | Monitor; retry adds <1KB code |
-| HA recorder DB size | Grows with state changes | Power sensor adds ~1 change/min; manageable |
-| Network traffic | Native API: minimal, push-based | No increase (sensors publish on change) |
-| SD card wear (RPi4) | Normal HA recorder writes | No additional writes beyond new template sensors |
+| Concern | Phase 1 | Phase 2 | Community Release |
+|---------|---------|---------|-------------------|
+| Configuration | Hardcoded GPIO pins, timing constants in C++ | Add YAML-configurable parameters | Fully parameterized YAML config |
+| Portability | Works only with VS300FL4 + VL-panel | Same | Documented for other VS-series boards |
+| Power source | USB battery (tethered) | USB battery | Board-powered via B0505S-1W DC-DC |
+| Reliability | Re-home on every change (brute force) | Display verification, skip re-home when confirmed | Graceful degradation if display read fails |
+| Testing | Manual verification at tub | Python test scripts for protocol decoding | Automated tests for protocol parser |
 
-## Build Order (Dependency-Aware)
+## Component Build Order
 
-Based on the architecture above, the recommended build order:
+Dependencies dictate the build sequence. Each component builds on the one before it.
 
-1. **Firmware retry loop** -- Modify `button_injector.cpp` to add retry counter and expose result/attempt sensors. This is the foundation that everything else observes. No HA changes needed for this to work (sensors just appear).
+```
+Phase 1: Open-Loop Button Injection
+  1. GPIO output config (photorelay drivers)          -- no dependencies
+  2. Button press timing (pulse + delay)              -- depends on 1
+  3. Climate entity skeleton (target_temp only)        -- depends on 2
+  4. Re-home algorithm                                 -- depends on 2, 3
+  5. HA TOU automation                                 -- depends on 3
 
-2. **Command result monitoring** -- New HA automation (`command_monitor.yaml`) that triggers on the injection result sensor. Depends on (1) being deployed.
+Phase 2: Closed-Loop Display Reading
+  6. Temperature ladder capture (at tub)               -- depends on working Phase 1
+  7. 7-segment lookup table (from ladder data)         -- depends on 6
+  8. RS-485 frame decoder (UART + clock sync)          -- depends on 7
+  9. Wire current_temperature into climate entity      -- depends on 3, 8
+  10. Verification logic (confirm setpoint applied)    -- depends on 9
 
-3. **Power-derived heater sensor** -- New template sensors in HA. Independent of (1) and (2); requires only identifying the Enphase entity ID. Can be built in parallel with (1).
+Phase 3: Community Release
+  11. Parameterize all config (YAML-driven)            -- depends on 1-10
+  12. Documentation (protocol, wiring, setup)          -- depends on all
+  13. Publish ESPHome external component               -- depends on 11, 12
+```
 
-4. **Heater mismatch / cross-validation** -- Template sensors comparing display heater and power heater. Depends on (3).
+**Critical path:** Steps 1-5 can proceed now (parts in transit, firmware can be written ahead). Steps 6-7 are blocked on physical access to tub + RS-485 adapter. Step 8 is blocked on step 7 (need the lookup table to validate decoding).
 
-5. **Data export script** -- Python script on Mac. Independent of all firmware changes. Can be built in parallel with everything.
+**Parallelizable:** Steps 1-4 (firmware) and step 5 (HA automation YAML) are independent and can be developed simultaneously. The temperature ladder capture (step 6) can happen in parallel with firmware testing once parts arrive.
 
-6. **Enhanced analysis** -- Update `analyze_heating.py` to consume REST API data. Depends on (5).
+## Key Architectural Decisions
 
-**Parallelizable:** (1) and (3) and (5) can all proceed simultaneously. (2) depends on (1). (4) depends on (3). (6) depends on (5).
+| Decision | Rationale | Alternatives Considered |
+|----------|-----------|------------------------|
+| ESPHome external component (C++) over pure YAML | Button sequencing, re-home algorithm, and display decoding are too complex for YAML lambdas. C++ gives proper state machines, timing control, and testability. | Pure YAML with lambdas (rejected: unmaintainable), Arduino firmware (rejected: lose ESPHome/HA integration) |
+| Climate entity over switches/buttons | HA climate entity natively supports target_temperature + current_temperature, which maps perfectly to setpoint control + display reading. TOU automations use standard `climate.set_temperature` service. | Individual button entities (rejected: HA automation would need to count presses itself), Number entity (rejected: no heating state tracking) |
+| Separate write and read paths | Button injection (write) is proven and simple. Display decoding (read) is complex and unproven for VS-series. Keeping them independent means Phase 1 delivers value without blocking on Phase 2 research. | Monolithic component (rejected: couples proven and unproven work), Read-first approach (rejected: reading doesn't help without write path) |
+| Re-home over relative adjustment | Eliminates all drift sources at the cost of ~50 extra button presses per setpoint change (~25 seconds). For TOU automation that changes setpoint 2-4 times per day, this is acceptable. | Relative adjustment with drift correction (rejected: requires display reading which is Phase 2), Trust the counter (rejected: fragile) |
+
+## Reference Projects
+
+| Project | Relevance | What to Learn |
+|---------|-----------|---------------|
+| [MagnusPer/Balboa-GS510SZ](https://github.com/MagnusPer/Balboa-GS510SZ) | Closest protocol match -- synchronous clock+data for GS-series with VL panels | Clock synchronization, 7-segment decoding, OR-gate button injection pattern |
+| [brianfeucht/esphome-balboa-spa](https://github.com/brianfeucht/esphome-balboa-spa) | Best ESPHome external component structure for spa control | Component organization, optional sub-components, CRC error handling, retry logic |
+| [netmindz/balboa_GL_ML_spa_control](https://github.com/netmindz/balboa_GL_ML_spa_control) | GL/ML display protocol (predecessor to VS-series) | Display multiplexing, segment mapping, MQTT bridge pattern |
+| [Ylianst/ESP-IQ2020](https://github.com/Ylianst/ESP-IQ2020) | High-quality ESPHome external component for different spa brand | Component structure, configuration patterns, documentation approach |
+| [jrowny/ESPHomeSpa](https://github.com/jrowny/ESPHomeSpa) | Simple ESPHome spa control | Minimal viable approach |
 
 ## Sources
 
-- [ESPHome Native API Component](https://esphome.io/components/api/)
-- [ESPHome CustomAPIDevice Reference](https://esphome.io/api/classesphome_1_1api_1_1_custom_a_p_i_device.html)
-- [ESPHome 2025.12.0 Changelog (action responses)](https://esphome.io/changelog/2025.12.0/)
-- [Home Assistant REST API Developer Docs](https://developers.home-assistant.io/docs/api/rest/)
-- [Enphase Envoy Integration](https://www.home-assistant.io/integrations/enphase_envoy/)
-- [HA Community: Appliance Power Monitor Blueprint](https://community.home-assistant.io/t/detect-and-monitor-the-state-of-an-appliance-based-on-its-power-consumption-v2-1-1-updated/421670)
-- [HA Community: Long Term Statistics via WebSocket API](https://community.home-assistant.io/t/can-i-get-long-term-statistics-from-the-rest-api/761444)
-- [ESP32 Memory Types (ESP-IDF docs)](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/memory-types.html)
-- [ESPHome 2025.11.0 Memory Optimizations](https://esphome.io/changelog/2025.11.0/)
+- MagnusPer/Balboa-GS510SZ: https://github.com/MagnusPer/Balboa-GS510SZ (HIGH confidence -- closest architectural reference)
+- brianfeucht/esphome-balboa-spa: https://github.com/brianfeucht/esphome-balboa-spa (HIGH confidence -- proven ESPHome external component pattern)
+- ESPHome Climate Component: https://esphome.io/components/climate/ (HIGH confidence -- official docs)
+- ESPHome External Components: https://esphome.io/components/external_components/ (HIGH confidence -- official docs)
+- ESPHome GPIO Switch: https://esphome.io/components/switch/gpio/ (HIGH confidence -- official docs)
+- ESPHome UART Bus: https://esphome.io/components/uart/ (HIGH confidence -- official docs)
+- ESPHome GPIO Output: https://esphome.io/components/output/gpio/ (HIGH confidence -- official docs)
+- Home Assistant Climate Entity: https://developers.home-assistant.io/docs/core/entity/climate/ (HIGH confidence -- official docs)
+- HA Community Balboa Thread: https://community.home-assistant.io/t/balboa-hot-tub-spa-automation-and-power-savings/353032 (MEDIUM confidence -- community experience)
+- netmindz/balboa_GL_ML_spa_control: https://github.com/netmindz/balboa_GL_ML_spa_control (MEDIUM confidence -- different protocol generation but similar approach)
+
+---
+
+*Architecture research: 2026-03-13*
