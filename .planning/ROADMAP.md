@@ -67,3 +67,13 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | 1. RS-485 Display Reading + Button Injection MVP | 3/3 | Complete | 2026-03-30 |
 | 2. Architecture Fix + HA Integration | 2/3 | In Progress|  |
 | 3. Community Contribution | 0/? | Not started | - |
+
+### Phase 6: HA Deployment Pipeline
+
+**Goal:** Set up HA packages directory structure and Git Pull add-on for automated config sync from this repo to the RPi4 HA instance. Restructure ha/ files as HA packages, configure Git Pull add-on, add input_boolean helpers, create deploy/reload script, test end-to-end sync.
+**Requirements**: TBD
+**Depends on:** Phase 5
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 6 to break down)
