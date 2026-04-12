@@ -22,7 +22,11 @@ trigger:
   - platform: time
     at: "22:00:00"
     id: coast
-condition: []
+condition:
+  # Block setpoint raises when thermal runaway is active (SAFE-02, D-06)
+  - condition: state
+    entity_id: input_boolean.thermal_runaway_active
+    state: "off"
 action:
   - choose:
       # Weekday: pre-heat before morning off-peak window
