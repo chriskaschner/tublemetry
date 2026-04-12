@@ -103,20 +103,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CMD-01 | TBD | Pending |
-| CMD-02 | TBD | Pending |
-| PWR-01 | TBD | Pending |
-| DATA-01 | TBD | Pending |
-| DATA-02 | TBD | Pending |
-| SAFE-01 | TBD | Pending |
-| SAFE-02 | TBD | Pending |
-| SAFE-03 | TBD | Pending |
+| BUTN-01 | Phase 2 | Complete |
+| BUTN-02 | Phase 1 | Complete |
+| BUTN-03 | Phase 1 | Complete |
+| BUTN-04 | Phase 1 | Complete |
+| BUTN-05 | Phase 1 | Complete |
+| CONN-01 | Phase 1 | Complete |
+| CONN-02 | Phase 1 | Complete |
+| CONN-03 | Phase 1 | Complete |
+| DISP-01 | Phase 1 | Complete |
+| DISP-02 | Phase 2 | Complete |
+| CMD-01 | Phase 4 | Pending |
+| CMD-02 | Phase 4 | Pending |
+| PWR-01 | Phase 5 | Pending |
+| DATA-01 | Phase 6 | Pending |
+| DATA-02 | Phase 6 | Pending |
+| SAFE-01 | Phase 5 | Pending |
+| SAFE-02 | Phase 5 | Pending |
+| SAFE-03 | Phase 5 | Pending |
 
 **Coverage:**
-- v2 requirements: 8 total
-- Mapped to phases: 0
-- Unmapped: 8 (pending roadmap creation)
+- v1 requirements: 10 total, 10 complete
+- v2 requirements: 8 total, 8 mapped to phases
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-04-12 after milestone v2.0 Closed-Loop Trust definition*
+*Last updated: 2026-04-12 after v2.0 roadmap creation*
