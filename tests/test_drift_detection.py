@@ -10,11 +10,18 @@ import yaml
 from pathlib import Path
 
 
+def _unwrap_automation(path):
+    """Load YAML and unwrap packages automation: list to bare automation dict."""
+    data = yaml.safe_load(path.read_text())
+    if isinstance(data, dict) and "automation" in data:
+        return data["automation"][0]
+    return data
+
+
 @pytest.fixture
 def drift_config():
     yaml_path = Path(__file__).parent.parent / "ha" / "drift_detection.yaml"
-    with open(yaml_path) as f:
-        return yaml.safe_load(f)
+    return _unwrap_automation(yaml_path)
 
 
 class TestDriftDetectionYaml:

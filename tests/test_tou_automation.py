@@ -18,14 +18,22 @@ RUNAWAY_FILE = Path(__file__).parent.parent / "ha" / "thermal_runaway.yaml"
 CLEAR_FILE = Path(__file__).parent.parent / "ha" / "thermal_runaway_clear.yaml"
 
 
+def _unwrap_automation(path):
+    """Load YAML and unwrap packages automation: list to bare automation dict."""
+    data = yaml.safe_load(path.read_text())
+    if isinstance(data, dict) and "automation" in data:
+        return data["automation"][0]
+    return data
+
+
 @pytest.fixture
 def tou_config():
-    return yaml.safe_load(TOU_FILE.read_text())
+    return _unwrap_automation(TOU_FILE)
 
 
 @pytest.fixture
 def clear_config():
-    return yaml.safe_load(CLEAR_FILE.read_text())
+    return _unwrap_automation(CLEAR_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +113,8 @@ class TestTouCrossCheck:
     """Verify setpoint entity consistency between TOU and thermal runaway."""
 
     def test_setpoint_entity_matches_runaway(self):
-        tou = yaml.safe_load(TOU_FILE.read_text())
-        runaway = yaml.safe_load(RUNAWAY_FILE.read_text())
+        tou = _unwrap_automation(TOU_FILE)
+        runaway = _unwrap_automation(RUNAWAY_FILE)
 
         # Get entity from first TOU choose branch
         tou_entity = None

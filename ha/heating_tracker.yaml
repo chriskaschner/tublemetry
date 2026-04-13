@@ -1,72 +1,10 @@
-# Two automations — paste each separately into HA as YAML.
-# Requires helpers created via Settings -> Helpers (see README).
+# heating_tracker.yaml -- DEPRECATED
 #
-# Automation 1: Log command when setpoint changes
-# Automation 2: Log completion when water reaches setpoint
-
----
-alias: Hot Tub Log Heating Command
-description: >
-  Fires when the climate setpoint changes. Records water temp, outdoor temp,
-  target temp, and a Unix timestamp into helpers for later analysis.
-mode: restart
-trigger:
-  - platform: state
-    entity_id: climate.hot_tub
-    attribute: temperature
-condition:
-  # Only log when heating is needed (setpoint raised above current temp)
-  - condition: template
-    value_template: >
-      {{ state_attr('climate.hot_tub', 'temperature') | float(0) >
-         state_attr('climate.hot_tub', 'current_temperature') | float(0) }}
-action:
-  - action: input_number.set_value
-    target:
-      entity_id: input_number.hot_tub_last_command_timestamp
-    data:
-      value: "{{ now().timestamp() | round(0) }}"
-  - action: input_number.set_value
-    target:
-      entity_id: input_number.hot_tub_last_command_start_temp
-    data:
-      value: "{{ state_attr('climate.hot_tub', 'current_temperature') | float }}"
-  - action: input_number.set_value
-    target:
-      entity_id: input_number.hot_tub_last_command_target_temp
-    data:
-      value: "{{ state_attr('climate.hot_tub', 'temperature') | float }}"
-  - action: input_number.set_value
-    target:
-      entity_id: input_number.hot_tub_last_command_outdoor_temp
-    data:
-      value: "{{ state_attr('weather.forecast_home', 'temperature') | float }}"
-
----
-alias: Hot Tub Log Heating Complete
-description: >
-  Fires when water temp reaches or exceeds the setpoint. Calculates
-  duration in minutes since the last command and stores it.
-mode: single
-trigger:
-  - platform: template
-    value_template: >
-      {% set current = state_attr('climate.hot_tub', 'current_temperature') | float(0) %}
-      {% set target = state_attr('climate.hot_tub', 'temperature') | float(0) %}
-      {{ target > 0 and current >= target }}
-    for:
-      minutes: 2
-condition:
-  # Only record if a command timestamp exists and was a heating event
-  - condition: template
-    value_template: >
-      {{ states('input_number.hot_tub_last_command_timestamp') | float(0) > 0 and
-         states('input_number.hot_tub_last_command_target_temp') | float(0) >
-         states('input_number.hot_tub_last_command_start_temp') | float(0) }}
-action:
-  - action: input_number.set_value
-    target:
-      entity_id: input_number.hot_tub_last_heating_duration
-    data:
-      value: >
-        {{ ((now().timestamp() - states('input_number.hot_tub_last_command_timestamp') | float) / 60) | round(1) }}
+# Superseded by thermal_model.yaml which provides SQL-based heating/cooling
+# rate sensors with the correct entity references (sensor/number instead of
+# the removed climate.hot_tub entity).
+#
+# This file is retained for reference only. It is not loaded as an HA package.
+# The two automations (Log Heating Command, Log Heating Complete) used
+# input_number helpers that are not defined elsewhere and referenced the
+# removed climate entity.

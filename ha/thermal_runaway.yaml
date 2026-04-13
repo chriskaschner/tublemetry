@@ -11,138 +11,139 @@
 #
 # Per SAFE-01 decisions D-01 through D-04.
 
-alias: Hot Tub Thermal Runaway Protection
-description: >
-  Safety automation: graduated response to sustained temperature overshoot.
-  Warning (2-4F): log + notify. Moderate (4-6F): proportional setpoint reduction + flag.
-  Severe (>6F): floor drop + disable TOU.
-mode: single
+automation:
+  - alias: Hot Tub Thermal Runaway Protection
+    description: >
+      Safety automation: graduated response to sustained temperature overshoot.
+      Warning (2-4F): log + notify. Moderate (4-6F): proportional setpoint reduction + flag.
+      Severe (>6F): floor drop + disable TOU.
+    mode: single
 
-trigger:
-  # SEVERE first -- trigger ordering matters in mode: single
-  - platform: template
-    value_template: >
-      {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
-         states('number.tublemetry_hot_tub_setpoint') | float(999) + 6 }}
-    for:
-      minutes: 5
-    id: severe
-  - platform: template
-    value_template: >
-      {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
-         states('number.tublemetry_hot_tub_setpoint') | float(999) + 4 }}
-    for:
-      minutes: 5
-    id: moderate
-  - platform: template
-    value_template: >
-      {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
-         states('number.tublemetry_hot_tub_setpoint') | float(999) + 2 }}
-    for:
-      minutes: 5
-    id: warning
+    trigger:
+      # SEVERE first -- trigger ordering matters in mode: single
+      - platform: template
+        value_template: >
+          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+             states('number.tublemetry_hot_tub_setpoint') | float(999) + 6 }}
+        for:
+          minutes: 5
+        id: severe
+      - platform: template
+        value_template: >
+          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+             states('number.tublemetry_hot_tub_setpoint') | float(999) + 4 }}
+        for:
+          minutes: 5
+        id: moderate
+      - platform: template
+        value_template: >
+          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+             states('number.tublemetry_hot_tub_setpoint') | float(999) + 2 }}
+        for:
+          minutes: 5
+        id: warning
 
-condition:
-  # Only fire when both sensors are reporting valid numeric values
-  - condition: template
-    value_template: >
-      {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
-         and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
-  # Gate on ESP32 being online -- refuse to act on stale data (SAFE-03)
-  - condition: state
-    entity_id: binary_sensor.tublemetry_hot_tub_api_status
-    state: "on"
+    condition:
+      # Only fire when both sensors are reporting valid numeric values
+      - condition: template
+        value_template: >
+          {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
+             and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
+      # Gate on ESP32 being online -- refuse to act on stale data (SAFE-03)
+      - condition: state
+        entity_id: binary_sensor.tublemetry_hot_tub_api_status
+        state: "on"
 
-action:
-  - choose:
-      # SEVERE: >6F overshoot for 5 min -- emergency response
-      - conditions:
-          - condition: trigger
-            id: severe
-        sequence:
+    action:
+      - choose:
+          # SEVERE: >6F overshoot for 5 min -- emergency response
+          - conditions:
+              - condition: trigger
+                id: severe
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    THERMAL RUNAWAY SEVERE: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
+                    > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 6F
+                    for 5 min. Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}.
+                    Dropping setpoint to 80F, disabling TOU, setting runaway flag.
+                  level: error
+                  logger: tubtron.thermal_runaway
+              - action: persistent_notification.create
+                data:
+                  title: "THERMAL RUNAWAY SEVERE - Hot Tub"
+                  message: >
+                    Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F exceeded
+                    setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >6F
+                    for 5+ minutes.
+                    Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}
+                    Setpoint dropped to 80F. TOU schedule disabled. Runaway flag set.
+                    MANUAL RE-ENABLE REQUIRED after investigation.
+                  notification_id: thermal_severe
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.thermal_runaway_active
+              - action: automation.turn_off
+                target:
+                  entity_id: automation.hot_tub_tou_schedule
+              - action: number.set_value
+                target:
+                  entity_id: number.tublemetry_hot_tub_setpoint
+                data:
+                  value: 80
+
+          # MODERATE: 4-6F overshoot for 5 min -- proportional reduction
+          - conditions:
+              - condition: trigger
+                id: moderate
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    THERMAL RUNAWAY MODERATE: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
+                    > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 4F
+                    for 5 min. Reducing setpoint proportionally. Setting runaway flag.
+                  level: warning
+                  logger: tubtron.thermal_runaway
+              - action: persistent_notification.create
+                data:
+                  title: "THERMAL RUNAWAY MODERATE - Hot Tub"
+                  message: >
+                    Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F exceeded
+                    setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >4F
+                    for 5+ minutes.
+                    Setpoint reduced proportionally. Runaway flag set.
+                    TOU setpoint raises blocked until temperature returns to setpoint.
+                  notification_id: thermal_moderate
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.thermal_runaway_active
+              - action: number.set_value
+                target:
+                  entity_id: number.tublemetry_hot_tub_setpoint
+                data:
+                  value: >
+                    {{ [states('number.tublemetry_hot_tub_setpoint') | float(80) -
+                       (states('sensor.tublemetry_hot_tub_temperature') | float(80) -
+                        states('number.tublemetry_hot_tub_setpoint') | float(80)), 80] | max | int }}
+
+        # WARNING (default): 2-4F overshoot for 5 min -- monitoring only
+        default:
           - action: system_log.write
             data:
               message: >
-                THERMAL RUNAWAY SEVERE: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
-                > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 6F
-                for 5 min. Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}.
-                Dropping setpoint to 80F, disabling TOU, setting runaway flag.
-              level: error
-              logger: tubtron.thermal_runaway
-          - action: persistent_notification.create
-            data:
-              title: "THERMAL RUNAWAY SEVERE - Hot Tub"
-              message: >
-                Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F exceeded
-                setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >6F
-                for 5+ minutes.
-                Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}
-                Setpoint dropped to 80F. TOU schedule disabled. Runaway flag set.
-                MANUAL RE-ENABLE REQUIRED after investigation.
-              notification_id: thermal_severe
-          - action: input_boolean.turn_on
-            target:
-              entity_id: input_boolean.thermal_runaway_active
-          - action: automation.turn_off
-            target:
-              entity_id: automation.hot_tub_tou_schedule
-          - action: number.set_value
-            target:
-              entity_id: number.tublemetry_hot_tub_setpoint
-            data:
-              value: 80
-
-      # MODERATE: 4-6F overshoot for 5 min -- proportional reduction
-      - conditions:
-          - condition: trigger
-            id: moderate
-        sequence:
-          - action: system_log.write
-            data:
-              message: >
-                THERMAL RUNAWAY MODERATE: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
-                > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 4F
-                for 5 min. Reducing setpoint proportionally. Setting runaway flag.
+                THERMAL WARNING: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
+                > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 2F
+                for 5 min. Monitoring only -- no action taken.
               level: warning
               logger: tubtron.thermal_runaway
           - action: persistent_notification.create
             data:
-              title: "THERMAL RUNAWAY MODERATE - Hot Tub"
+              title: "THERMAL WARNING - Hot Tub"
               message: >
                 Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F exceeded
-                setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >4F
-                for 5+ minutes.
-                Setpoint reduced proportionally. Runaway flag set.
-                TOU setpoint raises blocked until temperature returns to setpoint.
-              notification_id: thermal_moderate
-          - action: input_boolean.turn_on
-            target:
-              entity_id: input_boolean.thermal_runaway_active
-          - action: number.set_value
-            target:
-              entity_id: number.tublemetry_hot_tub_setpoint
-            data:
-              value: >
-                {{ [states('number.tublemetry_hot_tub_setpoint') | float(80) -
-                   (states('sensor.tublemetry_hot_tub_temperature') | float(80) -
-                    states('number.tublemetry_hot_tub_setpoint') | float(80)), 80] | max | int }}
-
-    # WARNING (default): 2-4F overshoot for 5 min -- monitoring only
-    default:
-      - action: system_log.write
-        data:
-          message: >
-            THERMAL WARNING: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
-            > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 2F
-            for 5 min. Monitoring only -- no action taken.
-          level: warning
-          logger: tubtron.thermal_runaway
-      - action: persistent_notification.create
-        data:
-          title: "THERMAL WARNING - Hot Tub"
-          message: >
-            Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F exceeded
-            setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >2F
-            for 5+ minutes. This may be normal during heating cycles.
-            No action taken. Monitoring only.
-          notification_id: thermal_warning
+                setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >2F
+                for 5+ minutes. This may be normal during heating cycles.
+                No action taken. Monitoring only.
+              notification_id: thermal_warning

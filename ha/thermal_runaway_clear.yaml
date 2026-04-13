@@ -8,43 +8,44 @@
 # After a moderate event, clearing the flag allows TOU to resume raising
 # setpoint on its next scheduled trigger.
 
-alias: Hot Tub Thermal Runaway Clear
-description: >
-  Clears thermal_runaway_active flag when temperature returns to setpoint.
-  Does NOT re-enable TOU automation -- that requires manual intervention
-  after severe events.
-mode: single
+automation:
+  - alias: Hot Tub Thermal Runaway Clear
+    description: >
+      Clears thermal_runaway_active flag when temperature returns to setpoint.
+      Does NOT re-enable TOU automation -- that requires manual intervention
+      after severe events.
+    mode: single
 
-trigger:
-  - platform: template
-    value_template: >
-      {{ states('sensor.tublemetry_hot_tub_temperature') | float(999) <=
-         states('number.tublemetry_hot_tub_setpoint') | float(0) }}
-    for:
-      minutes: 2
+    trigger:
+      - platform: template
+        value_template: >
+          {{ states('sensor.tublemetry_hot_tub_temperature') | float(999) <=
+             states('number.tublemetry_hot_tub_setpoint') | float(0) }}
+        for:
+          minutes: 2
 
-condition:
-  - condition: state
-    entity_id: input_boolean.thermal_runaway_active
-    state: "on"
-  - condition: template
-    value_template: >
-      {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
-         and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
-  - condition: state
-    entity_id: binary_sensor.tublemetry_hot_tub_api_status
-    state: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.thermal_runaway_active
+        state: "on"
+      - condition: template
+        value_template: >
+          {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
+             and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
+      - condition: state
+        entity_id: binary_sensor.tublemetry_hot_tub_api_status
+        state: "on"
 
-action:
-  - action: input_boolean.turn_off
-    target:
-      entity_id: input_boolean.thermal_runaway_active
-  - action: persistent_notification.create
-    data:
-      title: "THERMAL RUNAWAY CLEARED - Hot Tub"
-      message: >
-        Temperature {{ states('sensor.tublemetry_hot_tub_temperature') }}F
-        returned to setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F.
-        Runaway flag cleared. TOU may resume on next scheduled trigger
-        (if TOU automation is still enabled).
-      notification_id: thermal_cleared
+    action:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.thermal_runaway_active
+      - action: persistent_notification.create
+        data:
+          title: "THERMAL RUNAWAY CLEARED - Hot Tub"
+          message: >
+            Temperature {{ states('sensor.tublemetry_hot_tub_temperature') }}F
+            returned to setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F.
+            Runaway flag cleared. TOU may resume on next scheduled trigger
+            (if TOU automation is still enabled).
+          notification_id: thermal_cleared

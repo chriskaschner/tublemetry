@@ -17,9 +17,17 @@ TOU_FILE = Path(__file__).parent.parent / "ha" / "tou_automation.yaml"
 TEMP_FLOOR = 80
 
 
+def _unwrap_automation(path):
+    """Load YAML and unwrap packages automation: list to bare automation dict."""
+    data = yaml.safe_load(path.read_text())
+    if isinstance(data, dict) and "automation" in data:
+        return data["automation"][0]
+    return data
+
+
 @pytest.fixture
 def config():
-    return yaml.safe_load(RUNAWAY_FILE.read_text())
+    return _unwrap_automation(RUNAWAY_FILE)
 
 
 @pytest.fixture
@@ -350,8 +358,8 @@ class TestCrossCheck:
     """Verify entity references match between thermal runaway and TOU."""
 
     def test_setpoint_entity_matches_tou(self):
-        runaway = yaml.safe_load(RUNAWAY_FILE.read_text())
-        tou = yaml.safe_load(TOU_FILE.read_text())
+        runaway = _unwrap_automation(RUNAWAY_FILE)
+        tou = _unwrap_automation(TOU_FILE)
 
         # Get entity from severe drop action
         runaway_entity = None
@@ -382,8 +390,8 @@ class TestCrossCheck:
         )
 
     def test_tou_disable_entity_matches_tou_alias(self):
-        runaway = yaml.safe_load(RUNAWAY_FILE.read_text())
-        tou = yaml.safe_load(TOU_FILE.read_text())
+        runaway = _unwrap_automation(RUNAWAY_FILE)
+        tou = _unwrap_automation(TOU_FILE)
 
         # HA generates entity_id from alias
         tou_alias = tou.get("alias", "")

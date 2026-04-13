@@ -12,64 +12,65 @@
 # Note: thermal runaway automation already gates on ESP32 status (Plan 01).
 # Drift detection already handles unknown/unavailable values (per D-10).
 
-alias: Hot Tub ESP32 Offline Detection
-description: >
-  Detects ESP32 offline status and takes protective action. Disables TOU
-  to prevent setpoint changes on stale data. Notifies user on recovery
-  but does NOT auto-re-enable TOU.
-mode: single
+automation:
+  - alias: Hot Tub ESP32 Offline Detection
+    description: >
+      Detects ESP32 offline status and takes protective action. Disables TOU
+      to prevent setpoint changes on stale data. Notifies user on recovery
+      but does NOT auto-re-enable TOU.
+    mode: single
 
-trigger:
-  - platform: state
-    entity_id: binary_sensor.tublemetry_hot_tub_api_status
-    to: "off"
-    id: offline
-  - platform: state
-    entity_id: binary_sensor.tublemetry_hot_tub_api_status
-    to: "unavailable"
-    id: offline
-  - platform: state
-    entity_id: binary_sensor.tublemetry_hot_tub_api_status
-    to: "on"
-    id: online
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.tublemetry_hot_tub_api_status
+        to: "off"
+        id: offline
+      - platform: state
+        entity_id: binary_sensor.tublemetry_hot_tub_api_status
+        to: "unavailable"
+        id: offline
+      - platform: state
+        entity_id: binary_sensor.tublemetry_hot_tub_api_status
+        to: "on"
+        id: online
 
-action:
-  - choose:
-      - conditions:
-          - condition: trigger
-            id: offline
-        sequence:
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: offline
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    ESP32 OFFLINE: Hot tub ESP32 lost connection. TOU schedule
+                    disabled. All sensor data may be stale.
+                  level: warning
+                  logger: tubtron.stale_data
+              - action: persistent_notification.create
+                data:
+                  title: "ESP32 OFFLINE - Hot Tub"
+                  message: >
+                    Hot tub ESP32 lost connection. All sensor data may be stale.
+                    TOU schedule disabled to prevent setpoint changes on stale data.
+                    Re-enable TOU manually after verifying hot tub state.
+                  notification_id: esp32_offline
+              - action: automation.turn_off
+                target:
+                  entity_id: automation.hot_tub_tou_schedule
+        default:
           - action: system_log.write
             data:
               message: >
-                ESP32 OFFLINE: Hot tub ESP32 lost connection. TOU schedule
-                disabled. All sensor data may be stale.
-              level: warning
+                ESP32 ONLINE: Hot tub ESP32 reconnected. TOU schedule NOT
+                auto-re-enabled -- user must verify state and re-enable manually.
+              level: info
               logger: tubtron.stale_data
           - action: persistent_notification.create
             data:
-              title: "ESP32 OFFLINE - Hot Tub"
+              title: "ESP32 ONLINE - Hot Tub"
               message: >
-                Hot tub ESP32 lost connection. All sensor data may be stale.
-                TOU schedule disabled to prevent setpoint changes on stale data.
-                Re-enable TOU manually after verifying hot tub state.
-              notification_id: esp32_offline
-          - action: automation.turn_off
-            target:
-              entity_id: automation.hot_tub_tou_schedule
-    default:
-      - action: system_log.write
-        data:
-          message: >
-            ESP32 ONLINE: Hot tub ESP32 reconnected. TOU schedule NOT
-            auto-re-enabled -- user must verify state and re-enable manually.
-          level: info
-          logger: tubtron.stale_data
-      - action: persistent_notification.create
-        data:
-          title: "ESP32 ONLINE - Hot Tub"
-          message: >
-            Hot tub ESP32 reconnected. Sensor data is live again.
-            TOU schedule was NOT auto-re-enabled. Verify hot tub state
-            and re-enable TOU manually if appropriate.
-          notification_id: esp32_online
+                Hot tub ESP32 reconnected. Sensor data is live again.
+                TOU schedule was NOT auto-re-enabled. Verify hot tub state
+                and re-enable TOU manually if appropriate.
+              notification_id: esp32_online

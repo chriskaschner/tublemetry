@@ -13,7 +13,10 @@ TOU_FILE = Path(__file__).parent.parent / "ha" / "tou_automation.yaml"
 
 
 def load_tou() -> dict:
-    return yaml.safe_load(TOU_FILE.read_text())
+    data = yaml.safe_load(TOU_FILE.read_text())
+    if isinstance(data, dict) and "automation" in data:
+        return data["automation"][0]
+    return data
 
 
 def extract_action_values(tou_config) -> list:

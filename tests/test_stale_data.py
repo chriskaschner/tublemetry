@@ -21,14 +21,22 @@ STALE_FILE = Path(__file__).parent.parent / "ha" / "stale_data.yaml"
 TOU_FILE = Path(__file__).parent.parent / "ha" / "tou_automation.yaml"
 
 
+def _unwrap_automation(path):
+    """Load YAML and unwrap packages automation: list to bare automation dict."""
+    data = yaml.safe_load(path.read_text())
+    if isinstance(data, dict) and "automation" in data:
+        return data["automation"][0]
+    return data
+
+
 @pytest.fixture
 def stale_config():
-    return yaml.safe_load(STALE_FILE.read_text())
+    return _unwrap_automation(STALE_FILE)
 
 
 @pytest.fixture
 def tou_config():
-    return yaml.safe_load(TOU_FILE.read_text())
+    return _unwrap_automation(TOU_FILE)
 
 
 class TestStaleDataYaml:

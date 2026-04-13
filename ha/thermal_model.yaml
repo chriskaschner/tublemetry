@@ -1,201 +1,130 @@
-# ha/thermal_model.yaml
-#
 # Thermal model sensors for hot tub preheat scheduling.
 # Computes heating rate and cooling rate from recorder history,
 # then derives preheat time estimates.
-#
-# SETUP — paste each section into the appropriate HA config file:
-#
-# 1. sensor: block → configuration.yaml (or sensors.yaml if split)
-# 2. template: block → configuration.yaml (or template.yaml if split)
-# 3. input_number: block → configuration.yaml (or input_number.yaml if split)
-# 4. automation: block → automations.yaml (trigger rate refresh on schedule)
-# 5. Dashboard card YAML → paste into Lovelace manual card
-#
-# The SQL sensors query home-assistant_v2.db directly.
-# They run on demand (state refresh) — trigger via automation (see below).
-#
-# VERIFICATION — after adding to HA:
-#   Developer Tools → Template → paste any template sensor value_template
-#   Developer Tools → States → search "hot_tub_heating_rate" to confirm values
 
----
-# ── 1. SQL SENSORS ──────────────────────────────────────────────────────────
-#
-# Add to configuration.yaml under `sensor:` (or a split sensors.yaml).
-# Requires recorder integration (enabled by default in HA OS).
-
-sensor:
+sql:
 
   # Heating rate: deg/min weighted toward recent events (last 30 days)
   # Logic: find setpoint-raise events, measure time for water to follow,
   #        compute deg/min per event, weight by recency (1/days_ago).
-  - platform: sql
+  - name: "Hot Tub Heating Rate"
     db_url: sqlite:////config/home-assistant_v2.db
     scan_interval: 3600  # refresh hourly; automation below also triggers on demand
-    queries:
-      - name: "Hot Tub Heating Rate"
-        query: >
-          WITH
-          -- All setpoint states in last 30 days
-          sp_meta AS (
-            SELECT metadata_id FROM states_meta
-            WHERE entity_id = 'number.tublemetry_hot_tub_setpoint'
-          ),
-          wt_meta AS (
-            SELECT metadata_id FROM states_meta
-            WHERE entity_id = 'sensor.tublemetry_hot_tub_temperature'
-          ),
-          sp_states AS (
-            SELECT
-              CAST(state AS REAL) AS setpoint,
-              last_updated_ts AS ts
-            FROM states
-            WHERE metadata_id = (SELECT metadata_id FROM sp_meta)
-              AND state NOT IN ('unknown','unavailable','')
-              AND last_updated_ts > (strftime('%s','now') - 30*86400)
-            ORDER BY last_updated_ts
-          ),
-          -- Setpoint raise events: setpoint increased vs previous value
-          sp_raises AS (
-            SELECT
-              sp.setpoint AS target,
-              sp.ts AS raise_ts,
-              LAG(sp.setpoint) OVER (ORDER BY sp.ts) AS prev_setpoint
-            FROM sp_states sp
-          ),
-          raises AS (
-            SELECT target, raise_ts
-            FROM sp_raises
-            WHERE target > prev_setpoint
-              AND prev_setpoint IS NOT NULL
-          ),
-          -- For each raise event, find water temp at raise time and when it reached target
-          events AS (
-            SELECT
-              r.raise_ts,
-              r.target,
-              -- Water temp at raise time (last reading at or before raise_ts)
-              (SELECT CAST(state AS REAL)
-               FROM states
-               WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
-                 AND state NOT IN ('unknown','unavailable','')
-                 AND last_updated_ts <= r.raise_ts
-               ORDER BY last_updated_ts DESC LIMIT 1) AS start_temp,
-              -- Time when water first reached target (within 1F) after raise
-              (SELECT last_updated_ts
-               FROM states
-               WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
-                 AND state NOT IN ('unknown','unavailable','')
-                 AND CAST(state AS REAL) >= r.target - 1.0
-                 AND last_updated_ts > r.raise_ts
-                 AND last_updated_ts < r.raise_ts + 14400
-               ORDER BY last_updated_ts ASC LIMIT 1) AS reached_ts
-            FROM raises r
-          ),
-          -- Compute rate and recency weight for each completed event
-          rated AS (
-            SELECT
-              (target - start_temp) /
-                ((reached_ts - raise_ts) / 60.0) AS deg_per_min,
-              1.0 / (1.0 + (strftime('%s','now') - raise_ts) / 86400.0) AS weight
-            FROM events
-            WHERE reached_ts IS NOT NULL
-              AND start_temp IS NOT NULL
-              AND target > start_temp + 0.5
-              AND (reached_ts - raise_ts) > 120
-              AND (reached_ts - raise_ts) < 14400
-          )
-          SELECT
-            ROUND(
-              SUM(deg_per_min * weight) / NULLIF(SUM(weight), 0),
-            4) AS value
-          FROM rated;
-        column: "value"
-        unit_of_measurement: "°F/min"
+    query: >
+      WITH
+      sp_meta AS (
+        SELECT metadata_id FROM states_meta
+        WHERE entity_id = 'number.tublemetry_hot_tub_setpoint'
+      ),
+      wt_meta AS (
+        SELECT metadata_id FROM states_meta
+        WHERE entity_id = 'sensor.tublemetry_hot_tub_temperature'
+      ),
+      sp_states AS (
+        SELECT CAST(state AS REAL) AS setpoint, last_updated_ts AS ts
+        FROM states
+        WHERE metadata_id = (SELECT metadata_id FROM sp_meta)
+          AND state NOT IN ('unknown','unavailable','')
+          AND last_updated_ts > (strftime('%s','now') - 30*86400)
+        ORDER BY last_updated_ts
+      ),
+      sp_raises AS (
+        SELECT setpoint AS target, ts AS raise_ts,
+          LAG(setpoint) OVER (ORDER BY ts) AS prev_setpoint
+        FROM sp_states
+      ),
+      raises AS (
+        SELECT target, raise_ts FROM sp_raises
+        WHERE target > prev_setpoint AND prev_setpoint IS NOT NULL
+      ),
+      events AS (
+        SELECT r.raise_ts, r.target,
+          (SELECT CAST(state AS REAL) FROM states
+           WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+             AND state NOT IN ('unknown','unavailable','')
+             AND last_updated_ts <= r.raise_ts
+           ORDER BY last_updated_ts DESC LIMIT 1) AS start_temp,
+          (SELECT last_updated_ts FROM states
+           WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+             AND state NOT IN ('unknown','unavailable','')
+             AND CAST(state AS REAL) >= r.target - 1.0
+             AND last_updated_ts > r.raise_ts
+             AND last_updated_ts < r.raise_ts + 14400
+           ORDER BY last_updated_ts ASC LIMIT 1) AS reached_ts
+        FROM raises r
+      ),
+      rated AS (
+        SELECT
+          (target - start_temp) / ((reached_ts - raise_ts) / 60.0) AS deg_per_min,
+          1.0 / (1.0 + (strftime('%s','now') - raise_ts) / 86400.0) AS weight
+        FROM events
+        WHERE reached_ts IS NOT NULL AND start_temp IS NOT NULL
+          AND target > start_temp + 0.5
+          AND (reached_ts - raise_ts) > 120
+          AND (reached_ts - raise_ts) < 14400
+      )
+      SELECT ROUND(SUM(deg_per_min * weight) / NULLIF(SUM(weight), 0), 4) AS value
+      FROM rated;
+    column: "value"
+    unit_of_measurement: "°F/min"
 
   # Cooling rate: deg/hr lost when heater is off, weighted toward recent
-  # Logic: find heater-off windows >= 2h, measure temp drop start→end,
+  # Logic: find heater-off windows >= 2h, measure temp drop start->end,
   #        compute deg/hr, weight by recency.
-  - platform: sql
+  - name: "Hot Tub Cooling Rate"
     db_url: sqlite:////config/home-assistant_v2.db
     scan_interval: 3600
-    queries:
-      - name: "Hot Tub Cooling Rate"
-        query: >
-          WITH
-          wt_meta AS (
-            SELECT metadata_id FROM states_meta
-            WHERE entity_id = 'sensor.tublemetry_hot_tub_temperature'
-          ),
-          h_meta AS (
-            SELECT metadata_id FROM states_meta
-            WHERE entity_id = 'binary_sensor.tublemetry_hot_tub_heater'
-          ),
-          -- Heater state changes in last 30 days
-          heater AS (
-            SELECT
-              state,
-              last_updated_ts AS ts,
-              LEAD(last_updated_ts) OVER (ORDER BY last_updated_ts) AS next_ts
-            FROM states
-            WHERE metadata_id = (SELECT metadata_id FROM h_meta)
-              AND state NOT IN ('unknown','unavailable','')
-              AND last_updated_ts > (strftime('%s','now') - 30*86400)
-            ORDER BY last_updated_ts
-          ),
-          -- Heater-off windows >= 2 hours
-          off_windows AS (
-            SELECT ts AS off_start, next_ts AS off_end
-            FROM heater
-            WHERE state = 'off'
-              AND next_ts IS NOT NULL
-              AND (next_ts - ts) >= 7200
-          ),
-          -- Water temp at start and end of each off window
-          coolings AS (
-            SELECT
-              w.off_start,
-              w.off_end,
-              (SELECT CAST(state AS REAL)
-               FROM states
-               WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
-                 AND state NOT IN ('unknown','unavailable','')
-                 AND last_updated_ts >= w.off_start
-               ORDER BY last_updated_ts ASC LIMIT 1) AS temp_start,
-              (SELECT CAST(state AS REAL)
-               FROM states
-               WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
-                 AND state NOT IN ('unknown','unavailable','')
-                 AND last_updated_ts <= w.off_end
-               ORDER BY last_updated_ts DESC LIMIT 1) AS temp_end
-            FROM off_windows w
-          ),
-          -- Cooling rate per window, recency-weighted
-          rated AS (
-            SELECT
-              (temp_start - temp_end) /
-                ((off_end - off_start) / 3600.0) AS deg_per_hr,
-              1.0 / (1.0 + (strftime('%s','now') - off_start) / 86400.0) AS weight
-            FROM coolings
-            WHERE temp_start IS NOT NULL
-              AND temp_end IS NOT NULL
-              AND temp_start > temp_end
-              AND (temp_start - temp_end) < 20
-          )
-          SELECT
-            ROUND(
-              SUM(deg_per_hr * weight) / NULLIF(SUM(weight), 0),
-            2) AS value
-          FROM rated;
-        column: "value"
-        unit_of_measurement: "°F/hr"
-
-
----
-# ── 2. TEMPLATE SENSORS ──────────────────────────────────────────────────────
-#
-# Add to configuration.yaml under `template:` → `sensor:`.
+    query: >
+      WITH
+      wt_meta AS (
+        SELECT metadata_id FROM states_meta
+        WHERE entity_id = 'sensor.tublemetry_hot_tub_temperature'
+      ),
+      h_meta AS (
+        SELECT metadata_id FROM states_meta
+        WHERE entity_id = 'binary_sensor.tublemetry_hot_tub_heater'
+      ),
+      heater AS (
+        SELECT state, last_updated_ts AS ts,
+          LEAD(last_updated_ts) OVER (ORDER BY last_updated_ts) AS next_ts
+        FROM states
+        WHERE metadata_id = (SELECT metadata_id FROM h_meta)
+          AND state NOT IN ('unknown','unavailable','')
+          AND last_updated_ts > (strftime('%s','now') - 30*86400)
+        ORDER BY last_updated_ts
+      ),
+      off_windows AS (
+        SELECT ts AS off_start, next_ts AS off_end
+        FROM heater
+        WHERE state = 'off' AND next_ts IS NOT NULL
+          AND (next_ts - ts) >= 7200
+      ),
+      coolings AS (
+        SELECT w.off_start, w.off_end,
+          (SELECT CAST(state AS REAL) FROM states
+           WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+             AND state NOT IN ('unknown','unavailable','')
+             AND last_updated_ts >= w.off_start
+           ORDER BY last_updated_ts ASC LIMIT 1) AS temp_start,
+          (SELECT CAST(state AS REAL) FROM states
+           WHERE metadata_id = (SELECT metadata_id FROM wt_meta)
+             AND state NOT IN ('unknown','unavailable','')
+             AND last_updated_ts <= w.off_end
+           ORDER BY last_updated_ts DESC LIMIT 1) AS temp_end
+        FROM off_windows w
+      ),
+      rated AS (
+        SELECT
+          (temp_start - temp_end) / ((off_end - off_start) / 3600.0) AS deg_per_hr,
+          1.0 / (1.0 + (strftime('%s','now') - off_start) / 86400.0) AS weight
+        FROM coolings
+        WHERE temp_start IS NOT NULL AND temp_end IS NOT NULL
+          AND temp_start > temp_end AND (temp_start - temp_end) < 20
+      )
+      SELECT ROUND(SUM(deg_per_hr * weight) / NULLIF(SUM(weight), 0), 2) AS value
+      FROM rated;
+    column: "value"
+    unit_of_measurement: "°F/hr"
 
 template:
   - sensor:
@@ -241,13 +170,6 @@ template:
         state: >
           {{ states('sensor.hot_tub_cooling_rate') | float(0) | round(2) }}
 
-
----
-# ── 3. INPUT NUMBERS (optional bookmarks) ────────────────────────────────────
-#
-# Stores the last observed rate for display even when SQL sensor is stale.
-# Skip if you don't need persistence across HA restarts.
-
 input_number:
   hot_tub_heating_rate_snapshot:
     name: "Hot Tub Heating Rate (snapshot)"
@@ -264,10 +186,6 @@ input_number:
     step: 0.01
     unit_of_measurement: "°F/hr"
     icon: mdi:thermometer-chevron-down
-
-
----
-# ── 4. AUTOMATION — refresh rates daily and on demand ────────────────────────
 
 automation:
   - alias: "Hot Tub Refresh Thermal Model"
