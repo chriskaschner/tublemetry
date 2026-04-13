@@ -1,0 +1,4 @@
+input_boolean:
+  thermal_runaway_active:
+    name: "Thermal Runaway Active"
+    icon: mdi:alert-octagon

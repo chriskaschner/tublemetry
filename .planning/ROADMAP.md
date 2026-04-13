@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tubtron delivers hot tub TOU automation in three phases. Phase 1 built both the read path (RS-485 display decoding) and write path (button injection via photorelays) together — the two were developed as a single MVP. Phase 2 fixes the architecture: the ESPHome climate entity (which forces a broken F→C→F conversion chain) is replaced with a sensor + number entity pair, restoring HA temperature reporting and setpoint control. Phase 3 publishes the protocol findings and ESPHome component for the community.
+Tubtron delivers hot tub TOU automation in three phases. Phase 1 built both the read path (RS-485 display decoding) and write path (button injection via photorelays) together -- the two were developed as a single MVP. Phase 2 fixes the architecture: the ESPHome climate entity (which forces a broken F→C→F conversion chain) is replaced with a sensor + number entity pair, restoring HA temperature reporting and setpoint control. Phase 3 publishes the protocol findings and ESPHome component for the community.
 
 ## Phases
 
@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: RS-485 Display Reading + Button Injection MVP
-**Goal**: ESP32 decodes the Balboa VS300FL4 display stream and simulates button presses via photorelays — system is physically wired, live, and self-managing via TOU schedule
+**Goal**: ESP32 decodes the Balboa VS300FL4 display stream and simulates button presses via photorelays -- system is physically wired, live, and self-managing via TOU schedule
 **Depends on**: Nothing (first phase)
 **Requirements**: DISP-01, BUTN-02, BUTN-03, BUTN-04, BUTN-05, CONN-01, CONN-02, CONN-03
 **Status**: Complete (2026-03-30)
@@ -48,7 +48,7 @@ Plans:
 - [x] 02-03-PLAN.md -- Tests: extend test_esphome_yaml.py with sensor/number entity checks, create test_number_entity.py for range and TOU automation validation
 
 ### Phase 3: Community Contribution
-**Goal**: Protocol findings and ESPHome component are published in a form the community can use — documented, tested, and referenced from the relevant ESPHome/Balboa community threads
+**Goal**: Protocol findings and ESPHome component are published in a form the community can use -- documented, tested, and referenced from the relevant ESPHome/Balboa community threads
 **Depends on**: Phase 2 (stable architecture before publishing)
 **Requirements**: None (publication milestone)
 **Success Criteria**:
@@ -70,10 +70,12 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 ### Phase 6: HA Deployment Pipeline
 
-**Goal:** Set up HA packages directory structure and Git Pull add-on for automated config sync from this repo to the RPi4 HA instance. Restructure ha/ files as HA packages, configure Git Pull add-on, add input_boolean helpers, create deploy/reload script, test end-to-end sync.
-**Requirements**: TBD
+**Goal:** Restructure ha/ YAML files into valid HA packages, create a separate tublemetry-ha GitHub repo for deployment, rename this repo from tubtron to tublemetry, and document Git Pull add-on setup for automated config sync to the RPi4 HA instance.
+**Requirements**: PKG-01, PKG-02, PKG-03, PKG-04, PKG-05, PKG-06, PKG-07, PKG-08, PKG-09, PKG-10, PKG-11, PKG-12, PKG-13, PKG-14
 **Depends on:** Phase 5
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 6 to break down)
+- [ ] 06-01-PLAN.md -- Write package validation tests, create helpers.yaml, restructure all ha/ YAML files into valid HA packages format
+- [ ] 06-02-PLAN.md -- Rename GitHub repo from tubtron to tublemetry
+- [ ] 06-03-PLAN.md -- Create tublemetry-ha repo, populate with package files, document Git Pull add-on setup
