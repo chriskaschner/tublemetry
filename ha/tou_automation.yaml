@@ -1,5 +1,6 @@
 automation:
-  - alias: Hot Tub TOU Schedule
+  - id: hot_tub_tou_schedule
+    alias: Hot Tub TOU Schedule
     description: >
       Rg-2A TOU setpoint control. Weekday schedule tracks on/off-peak windows.
       Weekend holds 104F all day, coasts at 10pm.
@@ -104,4 +105,4 @@ automation:
                 target:
                   entity_id: number.tublemetry_hot_tub_setpoint
                 data:
-                  value: 98
+                  value: 96
