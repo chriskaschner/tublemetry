@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Completed 02-03-PLAN.md — all 268 tests passing, phase 02 complete
-last_updated: "2026-04-12T22:46:53.380Z"
-last_activity: 2026-04-12
+status: executing
+stopped_at: Phase 06 complete -- all 3 plans done, HA recovered and running with packages
+last_updated: "2026-04-13T03:00:00.000Z"
+last_activity: 2026-04-13 -- Phase 06 complete, HA deployed with Git Pull add-on
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  completed_phases: 3
+  total_plans: 9
+  completed_plans: 9
+  percent: 90
 ---
 
 # Project State
@@ -21,36 +21,32 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** The tub automatically lowers its setpoint during on-peak hours and raises it before evening use -- no human involvement required.
-**Current focus:** Phase 02 — Architecture Fix + HA Integration
+**Current focus:** Phase 06 complete. Phase 3 (Community Contribution) remaining.
 
 ## Current Position
 
-Phase: 06
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-12
+Phase: 06 (ha-deployment-pipeline) -- COMPLETE
+Plan: 3 of 3
+Status: All plans executed, HA deployed
+Last activity: 2026-04-13 -- Phase 06 complete
 
-Progress: [███████░░░] 75%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 6
+- Total plans completed: 9
 - Average duration: 5min
-- Total execution time: 14min
+- Total execution time: ~30min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 3/3 | 14min | 5min |
-| 05 | 3 | - | - |
-
-*Updated after each plan completion*
-| Phase 02 P01 | 2min | 2 tasks | 7 files |
-| Phase 02 P02 | 2min | 2 tasks | 2 files |
-| Phase 02 P03 | 12min | 2 tasks | 5 files |
+| 02 | 3/3 | 16min | 5min |
+| 06 | 3/3 | ~15min | 5min |
 
 ## Accumulated Context
 
@@ -72,14 +68,19 @@ Progress: [███████░░░] 75%
 - [2026-03-27]: press_once() must invalidate known_setpoint_ -- test presses change real setpoint without updating cache.
 - [2026-03-27]: timeout/abort also invalidate known_setpoint_ -- setpoint location uncertain after failed sequence.
 - [2026-03-27]: probe+cache over always-rehome -- user preference: delta presses only (e.g. 10 up for 94->104 vs 49 for re-home).
-- [Phase 02]: No device_class on temperature sensor — omitting device_class prevents HA unit conversion; unit_of_measurement='degF' is opaque label
-- [Phase 02]: number.py uses try/except around injector lookup — injector may not exist in read-only deployments
-- [Phase 02]: publish_state() called before request_temperature() in TublemetrySetpoint::control() — optimistic HA update
+- [Phase 02]: No device_class on temperature sensor -- omitting device_class prevents HA unit conversion; unit_of_measurement='degF' is opaque label
+- [Phase 02]: number.py uses try/except around injector lookup -- injector may not exist in read-only deployments
+- [Phase 02]: publish_state() called before request_temperature() in TublemetrySetpoint::control() -- optimistic HA update
 - [Phase 02]: temperature sensor entry has no entity_category and no device_class to prevent HA unit conversion
 - [Phase 02]: tou_automation.yaml uses plain degF integers (104/102/98/96) with number.set_value targeting number.tublemetry_hot_tub_setpoint
-- [Phase 02]: number excluded from raw-text YAML check — clock_pin.number sub-key causes false positives; structural parse check is sufficient
-- [Phase 02]: test_climate_entity_exists replaced with test_no_climate_entity — guards against accidental re-introduction of removed climate entity
-- [Phase 02]: pyyaml added to dev dependencies — was missing, caused import failures in all yaml-based tests
+- [Phase 02]: number excluded from raw-text YAML check -- clock_pin.number sub-key causes false positives; structural parse check is sufficient
+- [Phase 02]: test_climate_entity_exists replaced with test_no_climate_entity -- guards against accidental re-introduction of removed climate entity
+- [Phase 02]: pyyaml added to dev dependencies -- was missing, caused import failures in all yaml-based tests
+- [Phase 06]: Git Pull add-on syncs entire repo to /config -- YAML files must be in packages/ subdirectory to land at /config/packages/
+- [Phase 06]: Git Pull add-on first run CLEARS /config and restores non-YAML files only -- configuration.yaml, automations.yaml, scripts.yaml, scenes.yaml get wiped
+- [Phase 06]: tublemetry-ha repo structure: packages/ subdirectory contains all YAML files, README.md at root
+- [Phase 06]: heating_tracker.yaml deprecated (comment-only) -- references removed climate.hot_tub entity
+- [Phase 06]: dashboard.yaml excluded from packages -- Lovelace cannot be deployed via HA packages
 
 ### Pending Todos
 
@@ -89,10 +90,10 @@ None.
 
 - Setpoint display frames decoded as current temp (Balboa shows setpoint ~1s after button press -- no way to distinguish from raw 7-seg data). Not blocking for TOU automation.
 - ISR can flood WiFi if clock pin gets noise -- pulldowns help. Serial flash required if OTA fails.
-- Verification will likely time out (setpoint flash brief and noisy) -- not blocking, setpoint still gets set.
+- HA .storage/ was wiped by Git Pull add-on first run (2026-04-13). Integrations re-added manually. History DB survived.
 
 ## Session Continuity
 
-Last session: 2026-04-04T00:00:28.710Z
-Stopped at: Completed 02-03-PLAN.md — all 268 tests passing, phase 02 complete
+Last session: 2026-04-13T03:00:00.000Z
+Stopped at: Phase 06 complete. HA recovered, ESPHome reconnected, dashboard created. Phase 3 (Community Contribution) next.
 Resume file: None

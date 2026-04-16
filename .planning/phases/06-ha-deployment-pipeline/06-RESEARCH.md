@@ -537,9 +537,8 @@ Services that can be called after a git pull to apply changes without HA restart
 | PKG-04 | No `---` multi-document separators in any package file | unit | `uv run pytest tests/test_packages.py::test_no_multi_document_separators -x` | Wave 0 |
 | PKG-05 | templates.yaml has `template:` top-level key | unit | `uv run pytest tests/test_packages.py::test_templates_have_domain_key -x` | Wave 0 |
 | PKG-06 | thermal_model.yaml is single document with sql, template, input_number, automation keys | unit | `uv run pytest tests/test_packages.py::test_thermal_model_merged -x` | Wave 0 |
-| PKG-07 | deploy.yaml has shell_command and automation keys | unit | `uv run pytest tests/test_packages.py::test_deploy_package_structure -x` | Wave 0 |
 | PKG-08 | dashboard.yaml excluded from packages (no domain key needed) | unit | `uv run pytest tests/test_packages.py::test_dashboard_excluded -x` | Wave 0 |
-| PKG-09 | heating_tracker.yaml references number/sensor entities (not climate) | unit | `uv run pytest tests/test_packages.py::test_heating_tracker_no_climate_refs -x` | Wave 0 |
+| PKG-09 | heating_tracker.yaml is comment-only (deprecated, no YAML domain keys) | unit | `uv run pytest tests/test_packages.py::test_heating_tracker_deprecated -x` | Wave 0 |
 | PKG-10 | Existing test suite still passes after restructuring | integration | `uv run pytest tests/ -v` | Existing |
 
 ### Sampling Rate
@@ -548,7 +547,7 @@ Services that can be called after a git pull to apply changes without HA restart
 - **Phase gate:** Full suite green before `/gsd-verify-work`
 
 ### Wave 0 Gaps
-- [ ] `tests/test_packages.py` -- covers PKG-01 through PKG-09
+- [ ] `tests/test_packages.py` -- covers PKG-01 through PKG-10 (excluding PKG-07, removed)
 - [ ] No framework install needed -- pytest already in dev dependencies
 
 ## Assumptions Log
@@ -563,28 +562,19 @@ Services that can be called after a git pull to apply changes without HA restart
 
 **Note on A1:** D-01 explicitly says "Use the official HA Git Pull add-on." The research shows this carries significant risk for a repo that isn't structured to mirror /config. The planner should surface this tension to the user -- either restructure the repo, create a separate deployment repo, or deviate from D-01 to use shell_command instead.
 
-## Open Questions
+## Open Questions (All Resolved)
 
-1. **Git Pull add-on vs shell_command (conflicts with D-01)**
-   - What we know: Git Pull add-on syncs entire repo to /config; tubtron repo has firmware, tests, etc. that don't belong in /config
-   - What's unclear: Does the user want to create a separate deployment repo, restructure this repo, or accept shell_command as fulfilling D-01's intent?
-   - Recommendation: Surface to user during planning. Shell_command approach fulfills the automation intent of D-01 without the config-wipe risk.
+1. **Git Pull add-on vs shell_command** -- RESOLVED
+   - Decision: Separate tublemetry-ha repo with Git Pull add-on (per D-05). The config-wipe risk is eliminated because the dedicated repo contains ONLY package YAML files -- no firmware, tests, or other non-HA content. Git Pull add-on syncs the entire repo to /config/packages/, which is exactly the desired behavior.
 
-2. **heating_tracker.yaml climate entity references**
-   - What we know: File references `climate.hot_tub` which was removed in Phase 2. Uses input_number helpers not defined elsewhere.
-   - What's unclear: Whether heating_tracker should be updated to use current entities or deprecated entirely (sensors.yaml already has SQL-based heating/cooling rate sensors).
-   - Recommendation: heating_tracker.yaml may be superseded by thermal_model.yaml. Consider deprecating it.
+2. **heating_tracker.yaml climate entity references** -- RESOLVED
+   - Decision: Deprecated. The file is replaced with a comment-only stub (no YAML domain keys). thermal_model.yaml provides the SQL-based heating/cooling rate sensors that supersede it.
 
-3. **Initial deployment bootstrapping**
-   - What we know: deploy.yaml (the shell_command) needs to exist on the HA instance to pull other files, but itself is deployed by the pull.
-   - What's unclear: How to handle initial setup (chicken-and-egg).
-   - Recommendation: Document a one-time manual setup step: (1) add packages directive to configuration.yaml, (2) manually copy deploy.yaml to /config/packages/, (3) restart HA, (4) all subsequent deploys are automatic.
+3. **Initial deployment bootstrapping (chicken-and-egg)** -- RESOLVED
+   - Decision: README in tublemetry-ha documents one-time manual setup: (1) add packages directive to configuration.yaml, (2) install Git Pull add-on, (3) configure add-on to pull tublemetry-ha repo to /config/packages/, (4) restart HA. No deploy.yaml needed.
 
-4. **SQL integration reload**
-   - What we know: New `sql:` sensor definitions require a restart. Existing ones update on scan_interval.
-   - What's unclear: Whether modifying an existing SQL query (e.g., thermal_model.yaml) requires a restart or just waits for next scan_interval.
-   - Recommendation: Treat sql: changes as requiring restart. Document this limitation.
-
+4. **SQL integration reload** -- RESOLVED
+   - Decision: sql: changes require HA restart (not just reload). Documented in tublemetry-ha README reloadable-vs-restart table. Plan 03 README content includes this.
 ## Sources
 
 ### Primary (HIGH confidence)

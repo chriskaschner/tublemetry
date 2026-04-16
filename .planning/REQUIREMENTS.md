@@ -33,7 +33,24 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ## v2 Requirements
 
-Deferred to future release. Tracked but not in current roadmap.
+Requirements for Closed-Loop Trust milestone (v2.0).
+
+### Command Reliability
+
+- [x] **CMD-01**: Failed button presses retry automatically with exponential backoff (5s/15s/45s), up to 3 retries (4 total attempts), with press budget enforcement (N+2 presses per attempt)
+- [x] **CMD-02**: If detected setpoint disagrees with commanded setpoint for >2 minutes while injection is idle, HA fires a persistent notification (drift detection)
+
+### Safety and Power
+
+- [ ] **SAFE-01**: Graduated thermal runaway response (warning, partial reduction, floor drop)
+- [ ] **SAFE-02**: TOU-runaway oscillation prevention (runaway cooldown flag blocks TOU raise)
+- [ ] **SAFE-03**: Stale data gating (refuse to act on last-known values when ESP32 offline)
+- [ ] **PWR-01**: Independent heater state via Enphase power consumption (4kW step detection)
+
+### Data Pipeline
+
+- [ ] **DATA-01**: REST API history export from HA to dev machine
+- [ ] **DATA-02**: analyze_heating.py ingests REST API JSON directly (no SQLite dependency)
 
 ### Extras
 
@@ -74,10 +91,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISP-02 | Phase 2 | Complete |
 | DISP-03 | Phase 2 | Pending |
 | ENRG-01 | Phase 2 | Pending |
+| CMD-01 | Phase 4 | Complete |
+| CMD-02 | Phase 4 | Complete |
+| SAFE-01 | Phase 5 | Pending |
+| SAFE-02 | Phase 5 | Pending |
+| SAFE-03 | Phase 5 | Pending |
+| PWR-01 | Phase 5 | Pending |
+| DATA-01 | Phase 6 | Pending |
+| DATA-02 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 12 total
-- Mapped to phases: 12
+- v2 requirements: 8 total
+- Mapped to phases: 20
 - Unmapped: 0
 
 ---

@@ -1,14 +1,22 @@
 """
-Heating rate analysis: queries HA recorder DB to correlate
-heat-up time with outdoor temp and delta degrees.
+Heating rate analysis: queries HA recorder DB directly from raw state history.
+
+Derives heating events from setpoint changes — no helpers required.
+For each event where setpoint > water temp (heating needed), records:
+  - start time, start water temp, target setpoint, outdoor temp at start
+  - time to reach setpoint (within tolerance), heating rate (deg/min)
 
 Usage:
     uv run scripts/analyze_heating.py --db /path/to/home-assistant_v2.db
-    uv run scripts/analyze_heating.py --db /path/to/home-assistant_v2.db --plot
     uv run scripts/analyze_heating.py --db /path/to/home-assistant_v2.db --csv out.csv
+    uv run scripts/analyze_heating.py --db /path/to/home-assistant_v2.db --plot
 
 The HA recorder DB is typically at:
     /config/home-assistant_v2.db  (on HA OS, accessible via Samba share or SSH)
+    ~/config/home-assistant_v2.db (on HA Container)
+
+To copy from HA OS:
+    scp homeassistant@homeassistant.local:/config/home-assistant_v2.db ./ha.db
 """
 
 import argparse
@@ -17,107 +25,141 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-
-HELPERS = {
-    "timestamp":    "input_number.hot_tub_last_command_timestamp",
-    "start_temp":   "input_number.hot_tub_last_command_start_temp",
-    "target_temp":  "input_number.hot_tub_last_command_target_temp",
-    "outdoor_temp": "input_number.hot_tub_last_command_outdoor_temp",
-    "duration":     "input_number.hot_tub_last_heating_duration",
+ENTITIES = {
+    "water_temp":    "sensor.tublemetry_hot_tub_temperature",
+    "setpoint":      "number.tublemetry_hot_tub_setpoint",
+    "outdoor_temp":  "sensor.outdoor_temperature",
+    "heater":        "binary_sensor.tublemetry_hot_tub_heater",
 }
 
+# Tolerance: how close water temp needs to get to setpoint to count as "reached"
+REACHED_TOLERANCE_F = 1.0
 
-def load_helper_history(db_path: str) -> pd.DataFrame:
-    """
-    Pull state change history for all helpers and pivot into one row per event.
-    Each 'event' is identified by the timestamp helper changing.
-    """
+# Ignore heating events shorter than this (probably setpoint noise)
+MIN_DURATION_MIN = 2.0
+
+# Ignore heating events longer than this (probably interrupted / tub used mid-heat)
+MAX_DURATION_MIN = 240.0
+
+
+def load_entity_history(db_path: str, entity_id: str) -> pd.Series:
+    """Load full state history for one entity as a time-indexed Series."""
     con = sqlite3.connect(db_path)
-
-    entity_list = ", ".join(f"'{v}'" for v in HELPERS.values())
-    query = f"""
-        SELECT
-            s.entity_id,
-            s.state,
-            s.last_updated_ts
+    query = """
+        SELECT s.state, s.last_updated_ts
         FROM states s
         JOIN states_meta sm ON s.metadata_id = sm.metadata_id
-        WHERE sm.entity_id IN ({entity_list})
+        WHERE sm.entity_id = ?
           AND s.state NOT IN ('unknown', 'unavailable', '')
         ORDER BY s.last_updated_ts
     """
-    df = pd.read_sql_query(query, con)
+    df = pd.read_sql_query(query, con, params=(entity_id,))
     con.close()
 
-    df["last_updated_ts"] = pd.to_datetime(df["last_updated_ts"], unit="s", utc=True)
-    df["state"] = pd.to_numeric(df["state"], errors="coerce")
-    df = df.dropna(subset=["state"])
+    df["ts"] = pd.to_datetime(df["last_updated_ts"], unit="s", utc=True)
+    df["value"] = pd.to_numeric(df["state"], errors="coerce")
+    df = df.dropna(subset=["value"]).set_index("ts")["value"]
+    return df
 
-    # Reverse-map entity_id to field name
-    reverse = {v: k for k, v in HELPERS.items()}
-    df["field"] = df["entity_id"].map(reverse)
 
-    # Pivot: group by rounded timestamp windows
-    # Each event fires all 4 helpers within a few seconds of each other.
-    # Use the command timestamp value itself as the event key.
-    ts_changes = df[df["field"] == "timestamp"].copy()
-    ts_changes = ts_changes.rename(columns={"state": "command_ts", "last_updated_ts": "recorded_at"})
-    ts_changes = ts_changes[["command_ts", "recorded_at"]].reset_index(drop=True)
+def resample_to_common(series_dict: dict, freq="1min") -> pd.DataFrame:
+    """
+    Resample all series to a common 1-minute grid using forward-fill.
+    Returns a DataFrame with one column per entity key.
+    """
+    frames = {}
+    for key, s in series_dict.items():
+        frames[key] = s.resample(freq).last().ffill()
+    df = pd.DataFrame(frames).dropna()
+    return df
 
-    rows = []
-    for _, ev in ts_changes.iterrows():
-        cmd_ts = ev["command_ts"]
-        rec_at = ev["recorded_at"]
-        window_start = rec_at - pd.Timedelta(seconds=10)
-        window_end   = rec_at + pd.Timedelta(seconds=10)
 
-        # Find values for the other helpers recorded in the same ~20s window
-        nearby = df[
-            (df["last_updated_ts"] >= window_start) &
-            (df["last_updated_ts"] <= window_end)
-        ]
+def extract_heating_events(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Find heating events: moments where setpoint increases above water temp.
+    For each event, record start conditions and time to reach setpoint.
+    """
+    events = []
 
-        def get(field):
-            rows_ = nearby[nearby["field"] == field]["state"]
-            return rows_.iloc[0] if not rows_.empty else None
+    # Detect setpoint changes
+    setpoint_changes = df["setpoint"].diff().fillna(0)
+    change_idx = df.index[setpoint_changes > 0]
 
-        # Duration recorded separately (fires when heating completes)
-        # Find the next duration change after this command
-        future_duration = df[
-            (df["field"] == "duration") &
-            (df["last_updated_ts"] > rec_at)
-        ]
-        duration = future_duration["state"].iloc[0] if not future_duration.empty else None
+    for start_time in change_idx:
+        row = df.loc[start_time]
+        target = row["setpoint"]
+        start_temp = row["water_temp"]
 
-        rows.append({
-            "command_time": datetime.fromtimestamp(cmd_ts, tz=timezone.utc).astimezone(),
-            "start_temp":   get("start_temp"),
-            "target_temp":  get("target_temp"),
-            "outdoor_temp": get("outdoor_temp"),
-            "duration_min": duration,
+        # Only care about heating (setpoint raised above current temp)
+        if target <= start_temp + REACHED_TOLERANCE_F:
+            continue
+
+        outdoor = row.get("outdoor_temp", float("nan"))
+
+        # Find when water temp reaches target
+        future = df.loc[start_time:]
+        reached = future[future["water_temp"] >= target - REACHED_TOLERANCE_F]
+
+        if reached.empty:
+            # Never reached — still heating or interrupted
+            duration_min = None
+            deg_per_min = None
+        else:
+            end_time = reached.index[0]
+            duration_min = (end_time - start_time).total_seconds() / 60.0
+            delta = target - start_temp
+            deg_per_min = delta / duration_min if duration_min > 0 else None
+
+            # Filter implausible durations
+            if duration_min < MIN_DURATION_MIN or duration_min > MAX_DURATION_MIN:
+                duration_min = None
+                deg_per_min = None
+
+        events.append({
+            "start_time":   start_time.astimezone(),
+            "start_temp":   round(start_temp, 1),
+            "target_temp":  round(target, 1),
+            "delta_deg":    round(target - start_temp, 1),
+            "outdoor_temp": round(outdoor, 1) if pd.notna(outdoor) else None,
+            "duration_min": round(duration_min, 1) if duration_min is not None else None,
+            "deg_per_min":  round(deg_per_min, 4) if deg_per_min is not None else None,
         })
 
-    events = pd.DataFrame(rows)
-    events["delta_deg"] = events["target_temp"] - events["start_temp"]
-    events["deg_per_min"] = events["delta_deg"] / events["duration_min"]
-    return events
+    return pd.DataFrame(events)
 
 
 def print_summary(df: pd.DataFrame) -> None:
-    print(f"\n{'='*60}")
-    print(f"Heating events: {len(df)}  |  with duration: {df['duration_min'].notna().sum()}")
-    print(f"{'='*60}")
+    print(f"\n{'='*70}")
+    print(f"Heating events found: {len(df)}  |  completed: {df['duration_min'].notna().sum()}")
+    print(f"{'='*70}")
+
     complete = df.dropna(subset=["duration_min"])
     if complete.empty:
         print("No completed heating events yet.")
+        print("Either not enough data has been collected, or setpoint was never")
+        print("raised while the tub was below temperature.")
         return
+
     print(complete[[
-        "command_time", "start_temp", "target_temp", "delta_deg",
+        "start_time", "start_temp", "target_temp", "delta_deg",
         "outdoor_temp", "duration_min", "deg_per_min"
     ]].to_string(index=False, float_format="{:.1f}".format))
-    print(f"\nAverage heating rate: {complete['deg_per_min'].mean():.3f} deg/min")
-    print(f"Correlation (outdoor temp vs duration): "
-          f"{complete[['outdoor_temp','duration_min']].corr().iloc[0,1]:.3f}")
+
+    print(f"\nAverage heating rate:  {complete['deg_per_min'].mean():.4f} deg/min")
+    print(f"                       {60 / complete['deg_per_min'].mean():.1f} min/deg")
+
+    if complete["outdoor_temp"].notna().sum() >= 3:
+        corr = complete[["outdoor_temp", "duration_min"]].dropna().corr().iloc[0, 1]
+        print(f"Outdoor temp correlation with duration: {corr:.3f}")
+        print("  (negative = colder outside → longer heat-up, as expected)")
+
+    # Rough preheat estimator
+    print(f"\n{'─'*70}")
+    print("Preheat time estimates (at average rate):")
+    avg_rate = complete["deg_per_min"].mean()
+    for delta in [2, 4, 6, 8, 10]:
+        mins = delta / avg_rate
+        print(f"  {delta}°F raise → ~{mins:.0f} min ({mins/60:.1f}h)")
 
 
 def plot_results(df: pd.DataFrame) -> None:
@@ -130,19 +172,23 @@ def plot_results(df: pd.DataFrame) -> None:
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    axes[0].scatter(complete["outdoor_temp"], complete["duration_min"],
-                    c=complete["delta_deg"], cmap="YlOrRd", s=80, edgecolors="k", linewidths=0.5)
+    sc1 = axes[0].scatter(
+        complete["outdoor_temp"], complete["duration_min"],
+        c=complete["delta_deg"], cmap="YlOrRd", s=80, edgecolors="k", linewidths=0.5
+    )
     axes[0].set_xlabel("Outdoor Temp (°F)")
     axes[0].set_ylabel("Heat-up Time (min)")
-    axes[0].set_title("Heat-up Time vs Outdoor Temp\n(color = delta degrees)")
-    plt.colorbar(axes[0].collections[0], ax=axes[0], label="Delta °F")
+    axes[0].set_title("Heat-up Time vs Outdoor Temp\n(color = delta °F)")
+    plt.colorbar(sc1, ax=axes[0], label="Delta °F")
 
-    axes[1].scatter(complete["delta_deg"], complete["duration_min"],
-                    c=complete["outdoor_temp"], cmap="coolwarm", s=80, edgecolors="k", linewidths=0.5)
+    sc2 = axes[1].scatter(
+        complete["delta_deg"], complete["duration_min"],
+        c=complete["outdoor_temp"], cmap="coolwarm", s=80, edgecolors="k", linewidths=0.5
+    )
     axes[1].set_xlabel("Delta Degrees (°F)")
     axes[1].set_ylabel("Heat-up Time (min)")
-    axes[1].set_title("Heat-up Time vs Delta Degrees\n(color = outdoor temp)")
-    plt.colorbar(axes[1].collections[0], ax=axes[1], label="Outdoor °F")
+    axes[1].set_title("Heat-up Time vs Delta Degrees\n(color = outdoor °F)")
+    plt.colorbar(sc2, ax=axes[1], label="Outdoor °F")
 
     plt.tight_layout()
     plt.savefig("heating_analysis.png", dpi=150)
@@ -151,21 +197,38 @@ def plot_results(df: pd.DataFrame) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze hot tub heating rate data from HA recorder")
+    parser = argparse.ArgumentParser(
+        description="Analyze hot tub heating rate from HA recorder DB"
+    )
     parser.add_argument("--db", required=True, help="Path to home-assistant_v2.db")
-    parser.add_argument("--csv", help="Export events to CSV file")
+    parser.add_argument("--csv", help="Export events to CSV")
     parser.add_argument("--plot", action="store_true", help="Generate scatter plots")
     args = parser.parse_args()
 
-    df = load_helper_history(args.db)
-    print_summary(df)
+    print("Loading entity history...")
+    series = {}
+    for key, entity_id in ENTITIES.items():
+        s = load_entity_history(args.db, entity_id)
+        print(f"  {key}: {len(s)} data points ({entity_id})")
+        if s.empty:
+            print(f"  WARNING: no data for {entity_id} — check entity ID")
+        series[key] = s
+
+    print("Resampling to 1-minute grid...")
+    df = resample_to_common(series)
+    print(f"  {len(df)} minutes of data ({df.index.min()} → {df.index.max()})")
+
+    print("Extracting heating events...")
+    events = extract_heating_events(df)
+
+    print_summary(events)
 
     if args.csv:
-        df.to_csv(args.csv, index=False)
+        events.to_csv(args.csv, index=False)
         print(f"\nExported to {args.csv}")
 
     if args.plot:
-        plot_results(df)
+        plot_results(events)
 
 
 if __name__ == "__main__":

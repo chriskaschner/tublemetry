@@ -71,7 +71,7 @@ Phases execute in numeric order: 1 -> 2 -> 3
 ### Phase 6: HA Deployment Pipeline
 
 **Goal:** Restructure ha/ YAML files into valid HA packages, create a separate tublemetry-ha GitHub repo for deployment, rename this repo from tubtron to tublemetry, and document Git Pull add-on setup for automated config sync to the RPi4 HA instance.
-**Requirements**: PKG-01, PKG-02, PKG-03, PKG-04, PKG-05, PKG-06, PKG-07, PKG-08, PKG-09, PKG-10, PKG-11, PKG-12, PKG-13, PKG-14
+**Requirements**: PKG-01, PKG-02, PKG-03, PKG-04, PKG-05, PKG-06, PKG-08, PKG-09, PKG-10, PKG-11, PKG-12, PKG-13, PKG-14
 **Depends on:** Phase 5
 **Plans:** 3 plans
 

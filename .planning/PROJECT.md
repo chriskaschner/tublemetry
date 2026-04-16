@@ -66,5 +66,9 @@ The tub automatically lowers its setpoint during on-peak hours and raises it bef
 | 0x73 for "9" (not GS510SZ 0x7B) | VS300FL4 draws "9" without bottom segment; confirmed via ladder capture walking setpoint 95-90 | Confirmed 2026-03-20 |
 | Interrupt-driven GPIO over UART for ESPHome | Protocol is synchronous clock+data, not async UART; UART approach produces garbage | Decided, not yet implemented |
 
+## Current State
+
+Phase 4 (Command Reliability) complete -- firmware retry logic with exponential backoff (5s/15s/45s, 3 retries), press budget enforcement (N+2), deferred setpoint publish, 3 new HA sensor entities, and drift detection automation. 436 tests passing. Next: Phase 5 (Safety and Power Validation) or Phase 3 (Community Contribution).
+
 ---
-*Last updated: 2026-03-13 after initialization*
+*Last updated: 2026-04-12 after Phase 4 completion*
