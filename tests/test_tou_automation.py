@@ -1,12 +1,14 @@
-"""Tests for TOU oscillation prevention and thermal runaway auto-clear.
+"""Tests for the self-healing TOU automation and thermal runaway auto-clear.
 
 Validates:
-  - ha/tou_automation.yaml has input_boolean.thermal_runaway_active condition
-  - TOU structure preserved (6 triggers, alias, mode, setpoint range)
-  - ha/thermal_runaway_clear.yaml auto-clears moderate tier flag
-  - Auto-clear does NOT re-enable TOU automation (D-08)
+  - ha/tou_automation.yaml is the template-driven, self-healing apply automation:
+    triggers on expected-setpoint change, HA start, ESP32 reconnect, and flag
+    clear; gated by thermal_runaway_active off + ESP32 online; applies the
+    expected setpoint from sensor.hot_tub_expected_setpoint.
+  - ha/thermal_runaway_clear.yaml auto-clears the flag and does NOT re-enable TOU
+    via automation.turn_on (recovery happens via the schedule's own trigger).
 
-Per SAFE-02 decisions D-05 through D-08.
+Per SAFE-02 and the auto-recover redesign (reverses D-08/D-12).
 """
 
 import pytest
@@ -16,6 +18,9 @@ from pathlib import Path
 TOU_FILE = Path(__file__).parent.parent / "ha" / "tou_automation.yaml"
 RUNAWAY_FILE = Path(__file__).parent.parent / "ha" / "thermal_runaway.yaml"
 CLEAR_FILE = Path(__file__).parent.parent / "ha" / "thermal_runaway_clear.yaml"
+
+EXPECTED_SENSOR = "sensor.hot_tub_expected_setpoint"
+SETPOINT_ENTITY = "number.tublemetry_hot_tub_setpoint"
 
 
 def _unwrap_automation(path):
@@ -37,49 +42,12 @@ def clear_config():
 
 
 # ---------------------------------------------------------------------------
-# TestTouOscillationPrevention: input_boolean condition gating
+# TestTouStructure: identity preserved
 # ---------------------------------------------------------------------------
-class TestTouOscillationPrevention:
-    """Verify TOU automation blocks setpoint raises when runaway flag is on."""
-
-    def test_condition_block_is_not_empty(self, tou_config):
-        conditions = tou_config.get("condition")
-        assert conditions is not None, "condition must not be None"
-        assert conditions != [], "condition block must not be empty list"
-
-    def test_condition_has_state_check(self, tou_config):
-        conditions = tou_config["condition"]
-        has_state = any(
-            c.get("condition") == "state" for c in conditions
-        )
-        assert has_state, "Must have a state condition for input_boolean check"
-
-    def test_condition_checks_thermal_runaway_active(self, tou_config):
-        conditions = tou_config["condition"]
-        raw = yaml.dump(conditions)
-        assert "input_boolean.thermal_runaway_active" in raw, (
-            "Must check input_boolean.thermal_runaway_active"
-        )
-
-    def test_condition_requires_flag_off(self, tou_config):
-        """TOU should only run when thermal_runaway_active is 'off'."""
-        conditions = tou_config["condition"]
-        for cond in conditions:
-            if cond.get("condition") == "state":
-                entity = cond.get("entity_id", "")
-                if "thermal_runaway_active" in entity:
-                    assert cond.get("state") == "off", (
-                        "TOU must require thermal_runaway_active == 'off'"
-                    )
-                    return
-        pytest.fail("No state condition found for thermal_runaway_active")
-
-
-# ---------------------------------------------------------------------------
-# TestTouStructurePreserved: verify TOU structure unchanged
-# ---------------------------------------------------------------------------
-class TestTouStructurePreserved:
-    """Verify TOU structure is preserved after adding condition."""
+class TestTouStructure:
+    def test_id_is_stable(self, tou_config):
+        # Other automations / tests reference this id -- must not drift.
+        assert tou_config.get("id") == "hot_tub_tou_schedule"
 
     def test_alias_unchanged(self, tou_config):
         assert tou_config.get("alias") == "Hot Tub TOU Schedule"
@@ -87,46 +55,93 @@ class TestTouStructurePreserved:
     def test_mode_is_single(self, tou_config):
         assert tou_config.get("mode") == "single"
 
-    def test_has_six_triggers(self, tou_config):
-        triggers = tou_config.get("trigger", [])
-        assert len(triggers) == 6, f"Expected 6 triggers, got {len(triggers)}"
 
-    def test_all_setpoint_values_in_range(self, tou_config):
-        """All setpoint values must be within 80-104 range."""
-        raw = yaml.dump(tou_config["action"])
-        # Extract all 'value:' entries from YAML dump
-        for item in tou_config["action"]:
-            if "choose" in item:
-                for branch in item["choose"]:
-                    for act in branch.get("sequence", []):
-                        if act.get("action") == "number.set_value":
-                            value = act["data"]["value"]
-                            assert 80 <= value <= 104, (
-                                f"Setpoint {value} outside 80-104 range"
-                            )
+# ---------------------------------------------------------------------------
+# TestTouTriggers: self-healing trigger set (replaces the old 6 time triggers)
+# ---------------------------------------------------------------------------
+class TestTouTriggers:
+    def test_trigger_ids(self, tou_config):
+        ids = {t.get("id") for t in tou_config["trigger"]}
+        assert ids == {"expected_changed", "ha_start", "esp32_online", "runaway_cleared"}
+
+    def test_triggers_on_expected_setpoint_change(self, tou_config):
+        matches = [t for t in tou_config["trigger"]
+                   if t.get("platform") == "state" and t.get("entity_id") == EXPECTED_SENSOR]
+        assert len(matches) == 1, "Must trigger on the expected-setpoint sensor changing"
+
+    def test_triggers_on_ha_start(self, tou_config):
+        assert any(t.get("platform") == "homeassistant" and t.get("event") == "start"
+                   for t in tou_config["trigger"]), "Must re-apply on HA start"
+
+    def test_triggers_on_esp32_reconnect(self, tou_config):
+        assert any(t.get("entity_id") == "binary_sensor.tublemetry_hot_tub_api_status"
+                   and t.get("to") == "on" for t in tou_config["trigger"]), \
+            "Must re-apply when the ESP32 reconnects (self-heal)"
+
+    def test_triggers_on_flag_clear(self, tou_config):
+        assert any(t.get("entity_id") == "input_boolean.thermal_runaway_active"
+                   and t.get("to") == "off" for t in tou_config["trigger"]), \
+            "Must re-apply when the thermal runaway flag clears"
+
+
+# ---------------------------------------------------------------------------
+# TestTouConditions: gates (not disables) -- self-clearing safety
+# ---------------------------------------------------------------------------
+class TestTouConditions:
+    def test_condition_block_not_empty(self, tou_config):
+        assert tou_config.get("condition")
+
+    def test_condition_requires_flag_off(self, tou_config):
+        for cond in tou_config["condition"]:
+            if cond.get("condition") == "state" and "thermal_runaway_active" in cond.get("entity_id", ""):
+                assert cond.get("state") == "off"
+                return
+        pytest.fail("No state condition requiring thermal_runaway_active == off")
+
+    def test_condition_requires_esp32_online(self, tou_config):
+        for cond in tou_config["condition"]:
+            if cond.get("condition") == "state" and "api_status" in cond.get("entity_id", ""):
+                assert cond.get("state") == "on"
+                return
+        pytest.fail("No state condition requiring api_status == on (stale-data gate)")
+
+
+# ---------------------------------------------------------------------------
+# TestTouAction: applies the expected setpoint (no hardcoded temps)
+# ---------------------------------------------------------------------------
+class TestTouAction:
+    def _set_action(self, tou_config):
+        acts = [a for a in tou_config["action"] if a.get("action") == "number.set_value"]
+        assert len(acts) == 1, "Exactly one number.set_value action expected"
+        return acts[0]
+
+    def test_targets_setpoint_entity(self, tou_config):
+        assert self._set_action(tou_config)["target"]["entity_id"] == SETPOINT_ENTITY
+
+    def test_value_comes_from_expected_sensor(self, tou_config):
+        value = self._set_action(tou_config)["data"]["value"]
+        assert EXPECTED_SENSOR in value, "Setpoint must be driven by the expected-setpoint sensor"
+
+    def test_value_is_template_not_literal(self, tou_config):
+        value = self._set_action(tou_config)["data"]["value"]
+        assert isinstance(value, str) and "{{" in value, \
+            "Setpoint values must be templated (from sliders), not hardcoded"
 
 
 # ---------------------------------------------------------------------------
 # TestTouCrossCheck: entity consistency with thermal_runaway.yaml
 # ---------------------------------------------------------------------------
 class TestTouCrossCheck:
-    """Verify setpoint entity consistency between TOU and thermal runaway."""
-
     def test_setpoint_entity_matches_runaway(self):
         tou = _unwrap_automation(TOU_FILE)
         runaway = _unwrap_automation(RUNAWAY_FILE)
 
-        # Get entity from first TOU choose branch
         tou_entity = None
-        for item in tou.get("action", []):
-            if "choose" in item:
-                first_choice = item["choose"][0]
-                for act in first_choice.get("sequence", []):
-                    if act.get("action") == "number.set_value":
-                        tou_entity = act["target"]["entity_id"]
-                        break
+        for act in tou.get("action", []):
+            if act.get("action") == "number.set_value":
+                tou_entity = act["target"]["entity_id"]
+                break
 
-        # Get entity from runaway severe branch
         runaway_entity = None
         for item in runaway["action"]:
             if "choose" in item:
@@ -167,10 +182,18 @@ class TestThermalRunawayClear:
         assert len(triggers) >= 1
         assert triggers[0]["platform"] == "template"
 
-    def test_trigger_compares_temp_le_setpoint(self, clear_config):
-        """Trigger must compare temperature <= setpoint."""
+    def test_trigger_requires_heater_off(self, clear_config):
+        """Summer-safe clear: release when the heater is OFF (danger source gone),
+        not when water <= the floored setpoint (which deadlocked in summer)."""
         template = clear_config["trigger"][0]["value_template"]
-        assert "<=" in template, "Auto-clear trigger must use <= comparison"
+        assert "binary_sensor.tublemetry_hot_tub_heater" in template and "'off'" in template, (
+            "Auto-clear must require heater == 'off'"
+        )
+
+    def test_trigger_checks_below_ceiling(self, clear_config):
+        """Must not clear while water is still above the safety ceiling."""
+        template = clear_config["trigger"][0]["value_template"]
+        assert "107" in template, "Auto-clear must require water below the 107F ceiling"
 
     def test_trigger_sustain_at_least_2_minutes(self, clear_config):
         """Trigger must sustain for at least 2 minutes before clearing."""
@@ -179,17 +202,10 @@ class TestThermalRunawayClear:
         assert minutes >= 2, f"Auto-clear sustain must be >= 2 min, got {minutes}"
 
     def test_trigger_uses_float_999_for_temp(self, clear_config):
-        """For <= comparison, float(999) for temp is safe default (won't clear)."""
+        """float(999) temp default means bad data won't satisfy '< 107' (won't clear)."""
         template = clear_config["trigger"][0]["value_template"]
         assert "float(999)" in template, (
-            "Temp must use float(999) safe default for <= comparison"
-        )
-
-    def test_trigger_uses_float_0_for_setpoint(self, clear_config):
-        """For <= comparison, float(0) for setpoint is safe default (won't clear)."""
-        template = clear_config["trigger"][0]["value_template"]
-        assert "float(0)" in template, (
-            "Setpoint must use float(0) safe default for <= comparison"
+            "Temp must use float(999) safe default so unknown data won't clear"
         )
 
     def test_condition_checks_flag_is_on(self, clear_config):
@@ -242,8 +258,9 @@ class TestThermalRunawayClear:
         pytest.fail("persistent_notification.create not found")
 
     def test_does_not_reenable_tou(self, clear_config):
-        """Auto-clear must NOT re-enable TOU automation (D-08: severe requires manual)."""
+        """Auto-clear must NOT call automation.turn_on. Recovery is handled by the
+        TOU schedule's own runaway_cleared trigger, not by re-enabling here."""
         raw = yaml.dump(clear_config)
         assert "automation.turn_on" not in raw, (
-            "Auto-clear must NOT re-enable TOU automation"
+            "Auto-clear must NOT re-enable TOU via automation.turn_on"
         )

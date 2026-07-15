@@ -4,12 +4,13 @@ Validates that ha/stale_data.yaml has correct structure for ESP32 offline
 detection and TOU gating per SAFE-03 (D-09 through D-12).
 
 When ESP32 goes offline:
-- TOU schedule is disabled
 - User is notified via persistent notification
+- The TOU schedule is NOT disabled here; it self-pauses via its api_status
+  condition and resumes on reconnect (auto-recover redesign, reverses D-12)
 
 When ESP32 comes back online:
 - User is notified
-- TOU is NOT auto-re-enabled (user must verify state first, per D-12)
+- The schedule resumes automatically (no automation.turn_on needed)
 """
 
 import pytest
@@ -88,7 +89,7 @@ class TestStaleDataTriggers:
 
 
 class TestStaleDataOfflineResponse:
-    """Offline branch: choose block with notification and TOU disable."""
+    """Offline branch: choose block with notification (no TOU disable)."""
 
     def test_action_has_choose_block(self, stale_config):
         actions = stale_config["action"]
@@ -139,23 +140,14 @@ class TestStaleDataOfflineResponse:
                             return
         pytest.fail("OFFLINE not found in notification title")
 
-    def test_offline_branch_disables_tou(self, stale_config):
-        choose = stale_config["action"][0]["choose"]
-        for branch in choose:
-            conditions = branch.get("conditions", [])
-            for cond in conditions:
-                if cond.get("id") == "offline":
-                    sequence = branch["sequence"]
-                    turn_off_actions = [
-                        a for a in sequence
-                        if a.get("action") == "automation.turn_off"
-                    ]
-                    assert len(turn_off_actions) >= 1
-                    # Verify it targets the TOU automation
-                    target = turn_off_actions[0].get("target", {})
-                    assert target.get("entity_id") == "automation.hot_tub_tou_schedule"
-                    return
-        pytest.fail("automation.turn_off not found in offline branch")
+    def test_offline_branch_does_not_disable_tou(self, stale_config):
+        """Auto-recover redesign: offline must NOT disable the TOU automation.
+        The schedule self-pauses via its api_status condition and resumes on
+        reconnect."""
+        raw = yaml.dump(stale_config)
+        assert "automation.turn_off" not in raw, (
+            "stale_data.yaml must no longer disable the TOU schedule"
+        )
 
 
 class TestStaleDataOnlineResponse:
@@ -180,14 +172,14 @@ class TestStaleDataOnlineResponse:
                 return
         pytest.fail("esp32_online notification not found in default branch")
 
-    def test_online_notification_message_contains_not(self, stale_config):
+    def test_online_notification_message_mentions_resumed(self, stale_config):
         choose_block = stale_config["action"][0]
         default = choose_block.get("default", [])
         for a in default:
             if a.get("action") == "persistent_notification.create":
-                assert "NOT" in a["data"]["message"]
+                assert "resumed" in a["data"]["message"].lower()
                 return
-        pytest.fail("NOT not found in online notification message")
+        pytest.fail("online notification message not found")
 
     def test_online_default_does_not_contain_turn_on(self, stale_config):
         """Per D-12: TOU must NOT be auto-re-enabled on ESP32 recovery."""
@@ -199,25 +191,17 @@ class TestStaleDataOnlineResponse:
 
 
 class TestStaleDataCrossCheck:
-    """Cross-check: TOU entity ID matches TOU automation alias."""
+    """Auto-recover contract: stale_data no longer disables TOU; the TOU schedule
+    gates on ESP32 status itself so it self-pauses and resumes."""
 
-    def test_tou_entity_matches_automation_alias(self, stale_config, tou_config):
-        """The entity_id used in stale_data.yaml should correspond to the TOU alias."""
-        # TOU automation alias is "Hot Tub TOU Schedule"
-        # HA converts this to automation.hot_tub_tou_schedule
-        tou_alias = tou_config["alias"]
-        expected_entity = "automation." + tou_alias.lower().replace(" ", "_")
+    def test_stale_data_has_no_turn_off(self, stale_config):
+        raw = yaml.dump(stale_config)
+        assert "automation.turn_off" not in raw, (
+            "stale_data.yaml must not disable the TOU schedule"
+        )
 
-        # Find the turn_off target in the offline branch
-        choose = stale_config["action"][0]["choose"]
-        for branch in choose:
-            conditions = branch.get("conditions", [])
-            for cond in conditions:
-                if cond.get("id") == "offline":
-                    sequence = branch["sequence"]
-                    for a in sequence:
-                        if a.get("action") == "automation.turn_off":
-                            target = a.get("target", {})
-                            assert target.get("entity_id") == expected_entity
-                            return
-        pytest.fail("Could not find automation.turn_off in offline branch for cross-check")
+    def test_tou_gates_on_api_status(self, tou_config):
+        conds = yaml.dump(tou_config.get("condition", []))
+        assert "binary_sensor.tublemetry_hot_tub_api_status" in conds, (
+            "TOU must gate on ESP32 online (this replaces stale_data disabling it)"
+        )

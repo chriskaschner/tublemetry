@@ -23,7 +23,7 @@ automation:
         value_template: >
           {{ states('sensor.tublemetry_hot_tub_detected_setpoint') | float(0) !=
              states('number.tublemetry_hot_tub_setpoint') | float(0)
-             and states('text_sensor.tublemetry_hot_tub_injection_phase') == 'idle' }}
+             and states('sensor.tublemetry_hot_tub_injection_phase') == 'idle' }}
         for:
           minutes: 2
 
@@ -32,7 +32,7 @@ automation:
         value_template: >
           {{ states('sensor.tublemetry_hot_tub_detected_setpoint') not in ['unknown', 'unavailable']
              and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable']
-             and states('text_sensor.tublemetry_hot_tub_injection_phase') not in ['unknown', 'unavailable'] }}
+             and states('sensor.tublemetry_hot_tub_injection_phase') not in ['unknown', 'unavailable'] }}
 
     action:
       - action: system_log.write
@@ -40,7 +40,7 @@ automation:
           message: >
             SETPOINT DRIFT: detected {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F
             != commanded {{ states('number.tublemetry_hot_tub_setpoint') }}F
-            (idle for >2 min). Last result: {{ states('text_sensor.tublemetry_hot_tub_last_command_result') }}.
+            (idle for >2 min). Last result: {{ states('sensor.tublemetry_hot_tub_last_command_result') }}.
           level: warning
           logger: tubtron.drift_detection
 
@@ -52,8 +52,15 @@ automation:
             does not match commanded {{ states('number.tublemetry_hot_tub_setpoint') }}F.
             Mismatch sustained for >2 minutes while injection is idle.
 
-            Last command result: {{ states('text_sensor.tublemetry_hot_tub_last_command_result') }}
+            Last command result: {{ states('sensor.tublemetry_hot_tub_last_command_result') }}
             Retry count: {{ states('sensor.tublemetry_hot_tub_retry_count') }}
 
             Check the hot tub display manually.
           notification_id: setpoint_drift
+
+      - action: notify.mobile_app_chris_phone
+        data:
+          title: "Hot Tub setpoint drift"
+          message: >
+            Panel setpoint {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F
+            does not match commanded {{ states('number.tublemetry_hot_tub_setpoint') }}F.

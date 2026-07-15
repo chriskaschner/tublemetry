@@ -46,8 +46,9 @@ class TestDriftDetectionEntities:
         assert "number.tublemetry_hot_tub_setpoint" in trigger["value_template"]
 
     def test_trigger_references_injection_phase(self, drift_config):
+        # ESPHome text sensors map to HA's sensor.* domain, not text_sensor.*
         trigger = drift_config["trigger"][0]
-        assert "text_sensor.tublemetry_hot_tub_injection_phase" in trigger["value_template"]
+        assert "sensor.tublemetry_hot_tub_injection_phase" in trigger["value_template"]
 
     def test_trigger_checks_idle(self, drift_config):
         trigger = drift_config["trigger"][0]

@@ -74,8 +74,12 @@ class TestGraduatedThermalRunaway:
     def test_mode_is_single(self, config):
         assert config.get("mode") == "single"
 
-    def test_exactly_three_triggers(self, triggers):
-        assert len(triggers) == 3, f"Expected 3 triggers, got {len(triggers)}"
+    def test_four_triggers_three_tiers_plus_ceiling(self, triggers):
+        # 3 heater-gated relative tiers (severe/moderate/warning) + 1 absolute
+        # ceiling backstop (also id 'severe').
+        assert len(triggers) == 4, f"Expected 4 triggers, got {len(triggers)}"
+        ids = [t.get("id") for t in triggers]
+        assert ids.count("severe") == 2 and "moderate" in ids and "warning" in ids
 
     def test_action_has_choose_block(self, actions):
         has_choose = any("choose" in item for item in actions)
@@ -85,54 +89,79 @@ class TestGraduatedThermalRunaway:
 # ---------------------------------------------------------------------------
 # TestTriggerTiers: tier ordering, thresholds, timing, safe defaults
 # ---------------------------------------------------------------------------
+SETPOINT_ENTITY = "number.tublemetry_hot_tub_setpoint"
+
+
+def _relative(triggers):
+    """Overshoot tiers compare against the setpoint (heater-gated)."""
+    return [t for t in triggers if SETPOINT_ENTITY in t["value_template"]]
+
+
+def _ceiling(triggers):
+    """Absolute-ceiling backstop triggers do not reference the setpoint."""
+    return [t for t in triggers
+            if t.get("id") == "severe" and SETPOINT_ENTITY not in t["value_template"]]
+
+
 class TestTriggerTiers:
-    """Verify trigger tier ordering, thresholds, and sustain durations."""
+    """Verify tier thresholds, the summer heater-gate, and the ceiling backstop."""
 
     def test_severe_is_first(self, triggers):
         assert triggers[0].get("id") == "severe", (
             f"Severe must be first trigger (index 0), got '{triggers[0].get('id')}'"
         )
 
-    def test_moderate_is_second(self, triggers):
-        assert triggers[1].get("id") == "moderate", (
-            f"Moderate must be second trigger (index 1), got '{triggers[1].get('id')}'"
-        )
+    def test_has_all_three_tiers(self, triggers):
+        ids = {t.get("id") for t in triggers}
+        assert {"severe", "moderate", "warning"} <= ids
 
-    def test_warning_is_third(self, triggers):
-        assert triggers[2].get("id") == "warning", (
-            f"Warning must be third trigger (index 2), got '{triggers[2].get('id')}'"
-        )
-
-    def test_severe_threshold_plus_6(self, triggers):
-        template = triggers[0]["value_template"]
-        assert "+ 6" in template, "Severe trigger must use threshold + 6"
+    def test_severe_relative_threshold_plus_6(self, triggers):
+        rel = [t for t in _relative(triggers) if t.get("id") == "severe"]
+        assert rel and "+ 6" in rel[0]["value_template"], "Severe tier must use setpoint + 6"
 
     def test_moderate_threshold_plus_4(self, triggers):
-        template = triggers[1]["value_template"]
-        assert "+ 4" in template, "Moderate trigger must use threshold + 4"
+        m = [t for t in triggers if t.get("id") == "moderate"]
+        assert m and "+ 4" in m[0]["value_template"], "Moderate tier must use setpoint + 4"
 
     def test_warning_threshold_plus_2(self, triggers):
-        template = triggers[2]["value_template"]
-        assert "+ 2" in template, "Warning trigger must use threshold + 2"
+        w = [t for t in triggers if t.get("id") == "warning"]
+        assert w and "+ 2" in w[0]["value_template"], "Warning tier must use setpoint + 2"
 
-    def test_all_triggers_sustain_5_minutes(self, triggers):
-        for i, trig in enumerate(triggers):
-            minutes = trig.get("for", {}).get("minutes")
-            assert minutes == 5, (
-                f"Trigger {i} ({trig.get('id')}) sustain must be 5 min, got {minutes}"
+    def test_relative_tiers_gate_on_heater_on(self, triggers):
+        """Summer fix: overshoot tiers must require the heater to be ON so a
+        setpoint coast-down (heater off) does not false-trigger."""
+        for t in _relative(triggers):
+            tpl = t["value_template"]
+            assert "binary_sensor.tublemetry_hot_tub_heater" in tpl and "'on'" in tpl, (
+                f"Relative tier '{t.get('id')}' must gate on heater == 'on'"
+            )
+
+    def test_has_absolute_ceiling_backstop(self, triggers):
+        ceiling = _ceiling(triggers)
+        assert ceiling, "Must have an absolute ceiling severe trigger (heater-independent)"
+        assert "107" in ceiling[0]["value_template"]
+
+    def test_ceiling_is_not_heater_gated(self, triggers):
+        for t in _ceiling(triggers):
+            assert "heater" not in t["value_template"], (
+                "Ceiling backstop must fire regardless of heater state"
+            )
+
+    def test_relative_tiers_sustain_5_minutes(self, triggers):
+        for t in _relative(triggers):
+            assert t.get("for", {}).get("minutes") == 5, (
+                f"Relative tier '{t.get('id')}' sustain must be 5 min"
             )
 
     def test_all_triggers_use_float_0_for_temp(self, triggers):
         for trig in triggers:
-            template = trig["value_template"]
-            assert "float(0)" in template, (
+            assert "float(0)" in trig["value_template"], (
                 f"Trigger {trig.get('id')} must use float(0) for temperature safe default"
             )
 
-    def test_all_triggers_use_float_999_for_setpoint(self, triggers):
-        for trig in triggers:
-            template = trig["value_template"]
-            assert "float(999)" in template, (
+    def test_relative_tiers_use_float_999_for_setpoint(self, triggers):
+        for trig in _relative(triggers):
+            assert "float(999)" in trig["value_template"], (
                 f"Trigger {trig.get('id')} must use float(999) for setpoint safe default"
             )
 
@@ -179,7 +208,7 @@ class TestConditionGating:
 # TestSevereResponse: floor drop, disable TOU, set flag
 # ---------------------------------------------------------------------------
 class TestSevereResponse:
-    """Verify severe tier actions: log, notify, flag, disable TOU, drop to 80."""
+    """Verify severe tier actions: log, notify, flag, drop to 80 (no TOU disable)."""
 
     @pytest.fixture
     def branch(self, actions):
@@ -218,17 +247,14 @@ class TestSevereResponse:
                 return
         pytest.fail("input_boolean.turn_on not found")
 
-    def test_disables_tou(self, sequence):
+    def test_does_not_disable_tou(self, sequence):
+        """Severe must NOT disable the TOU automation. The runaway flag gates the
+        schedule instead, so recovery is automatic once the flag clears (reverses
+        D-08)."""
         types = [a.get("action") for a in sequence]
-        assert "automation.turn_off" in types, "Severe must disable TOU schedule"
-
-    def test_disables_correct_tou_entity(self, sequence):
-        for a in sequence:
-            if a.get("action") == "automation.turn_off":
-                entity = a.get("target", {}).get("entity_id", "")
-                assert entity == "automation.hot_tub_tou_schedule"
-                return
-        pytest.fail("automation.turn_off not found")
+        assert "automation.turn_off" not in types, (
+            "Severe must not disable TOU -- the flag gates the schedule"
+        )
 
     def test_drops_setpoint_to_floor(self, sequence):
         for a in sequence:
@@ -238,9 +264,9 @@ class TestSevereResponse:
                 return
         pytest.fail("number.set_value not found in severe sequence")
 
-    def test_has_five_actions(self, sequence):
-        assert len(sequence) == 5, (
-            f"Severe needs 5 actions (log, notify, flag, disable TOU, drop setpoint), got {len(sequence)}"
+    def test_has_four_actions(self, sequence):
+        assert len(sequence) == 4, (
+            f"Severe needs 4 actions (log, notify, flag, drop setpoint), got {len(sequence)}"
         )
 
 
@@ -373,15 +399,12 @@ class TestCrossCheck:
                                     runaway_entity = act["target"]["entity_id"]
                                     break
 
-        # Get entity from first TOU action
+        # Get entity from the TOU apply action (direct number.set_value)
         tou_entity = None
-        for item in tou.get("action", []):
-            if "choose" in item:
-                first_choice = item["choose"][0]
-                for act in first_choice.get("sequence", []):
-                    if "target" in act:
-                        tou_entity = act["target"]["entity_id"]
-                        break
+        for act in tou.get("action", []):
+            if act.get("action") == "number.set_value":
+                tou_entity = act["target"]["entity_id"]
+                break
 
         assert runaway_entity is not None, "Could not find setpoint entity in runaway severe"
         assert tou_entity is not None, "Could not find setpoint entity in TOU"
@@ -389,26 +412,10 @@ class TestCrossCheck:
             f"Entity mismatch: runaway targets {runaway_entity}, TOU targets {tou_entity}"
         )
 
-    def test_tou_disable_entity_matches_tou_alias(self):
+    def test_severe_does_not_reference_tou_disable(self):
+        """The redesign removed automation.turn_off from the severe branch."""
         runaway = _unwrap_automation(RUNAWAY_FILE)
-        tou = _unwrap_automation(TOU_FILE)
-
-        # HA generates entity_id from alias
-        tou_alias = tou.get("alias", "")
-        expected_entity = "automation." + tou_alias.lower().replace(" ", "_").replace("-", "_")
-
-        disabled_entity = None
-        for item in runaway["action"]:
-            if "choose" in item:
-                for branch in item["choose"]:
-                    for cond in branch.get("conditions", []):
-                        if cond.get("id") == "severe":
-                            for act in branch["sequence"]:
-                                if act.get("action") == "automation.turn_off":
-                                    disabled_entity = act["target"]["entity_id"]
-                                    break
-
-        assert disabled_entity is not None, "Could not find TOU disable in severe branch"
-        assert disabled_entity == expected_entity, (
-            f"TOU disable targets '{disabled_entity}' but TOU alias generates '{expected_entity}'"
+        raw = yaml.dump(runaway)
+        assert "automation.turn_off" not in raw, (
+            "thermal_runaway.yaml must no longer disable the TOU automation"
         )

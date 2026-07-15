@@ -2,3 +2,27 @@ input_boolean:
   thermal_runaway_active:
     name: "Thermal Runaway Active"
     icon: mdi:alert-octagon
+
+# Seasonal setpoint sliders. sensor.hot_tub_expected_setpoint (templates.yaml)
+# reads these live, so adjusting a season is just dragging a slider -- no YAML
+# edit. min/max 80-104 enforce the firmware safety clamp (button_injector.h
+# TEMP_FLOOR/CEILING). `initial` sets the first-boot value; the user's later
+# changes persist across restarts (restore takes precedence over `initial`).
+input_number:
+  hot_tub_max_setpoint:
+    name: "Hot Tub Max Setpoint"
+    min: 80
+    max: 104
+    step: 1
+    initial: 104          # winter comfort temp; drop to ~101 for summer
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-high
+
+  hot_tub_coast_setpoint:
+    name: "Hot Tub Coast Setpoint"
+    min: 80
+    max: 104
+    step: 1
+    initial: 96           # on-peak / overnight floor
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-low

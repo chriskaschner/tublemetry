@@ -6,33 +6,38 @@ template:
         device_class: temperature
         state_class: measurement
 
-      - name: "Hot Tub Preheat Minutes"
-        unit_of_measurement: "min"
-        state_class: measurement
-        icon: mdi:timer-outline
-        state: >
-          {% set rate = states('sensor.hot_tub_heating_rate') | float(0) %}
-          {% set current = states('sensor.tublemetry_hot_tub_temperature') | float(0) %}
-          {% set target = states('number.tublemetry_hot_tub_setpoint') | float(0) %}
-          {% if rate > 0 and target > current %}
-            {{ ((target - current) / rate) | round(0) | int }}
+      # Single source of truth for the TOU schedule. Given the time of day and
+      # weekday, this is the setpoint the tub SHOULD be at right now, driven by
+      # the two seasonal sliders. tou_automation.yaml applies whatever this
+      # reports; tou_watchdog.yaml alerts if the commanded setpoint drifts from
+      # it. now() re-renders every minute, so boundaries flip within ~60s.
+      #
+      # Schedule (weekday):  04:30-10:00 max | 10:00-17:30 coast |
+      #   17:30-19:00 max-2 (evening preheat) | 19:00-22:00 max | 22:00-04:30 coast
+      # Schedule (weekend):  05:00-22:00 max | 22:00-05:00 coast
+      - name: "Hot Tub Expected Setpoint"
+        unit_of_measurement: "°F"
+        icon: mdi:thermometer-auto
+        state: >-
+          {% set maxsp = states('input_number.hot_tub_max_setpoint') | int(104) %}
+          {% set coast = states('input_number.hot_tub_coast_setpoint') | int(96) %}
+          {% set hm = now().hour * 60 + now().minute %}
+          {% set wd = now().weekday() %}
+          {% if wd < 5 %}
+          {%   if 270 <= hm < 600 %}{% set sp = maxsp %}
+          {%   elif 600 <= hm < 1050 %}{% set sp = coast %}
+          {%   elif 1050 <= hm < 1140 %}{% set sp = maxsp - 2 %}
+          {%   elif 1140 <= hm < 1320 %}{% set sp = maxsp %}
+          {%   else %}{% set sp = coast %}
+          {%   endif %}
           {% else %}
-            0
+          {%   if 300 <= hm < 1320 %}{% set sp = maxsp %}
+          {%   else %}{% set sp = coast %}
+          {%   endif %}
           {% endif %}
+          {{ sp }}
 
-      - name: "Hot Tub Preheat ETA"
-        icon: mdi:clock-outline
-        state: >
-          {% set mins = states('sensor.hot_tub_preheat_minutes') | int(0) %}
-          {% set current = states('sensor.tublemetry_hot_tub_temperature') | float(0) %}
-          {% set target = states('number.tublemetry_hot_tub_setpoint') | float(0) %}
-          {% set rate = states('sensor.hot_tub_heating_rate') | float(0) %}
-          {% if rate == 0 %}
-            No rate data yet
-          {% elif target <= current %}
-            Ready now
-          {% elif mins < 60 %}
-            ~{{ mins }} min
-          {% else %}
-            ~{{ (mins / 60) | round(1) }}h ({{ mins }} min)
-          {% endif %}
+      # NOTE: "Hot Tub Preheat Minutes" and "Hot Tub Preheat ETA" are defined in
+      # thermal_model.yaml (its single source, alongside the heating/cooling rate
+      # sensors they depend on). They were removed from here to stop the
+      # duplicate ..._2 registration.

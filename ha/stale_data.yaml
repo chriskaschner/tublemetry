@@ -1,23 +1,22 @@
-# ESP32 Offline Detection and Stale Data Gating
+# ESP32 Offline Detection and Stale Data Notification
 #
 # When the ESP32 goes offline (status binary_sensor goes to off or unavailable),
-# all sensor data becomes stale. This automation:
-# 1. Notifies the user
-# 2. Disables TOU schedule (prevents setpoint changes on stale data)
+# all sensor data becomes stale. This automation notifies the user.
 #
-# When the ESP32 comes back online:
-# 1. Notifies the user
-# 2. Does NOT auto-re-enable TOU -- user must verify state first (per D-12)
+# It no longer disables the TOU schedule. The schedule (tou_automation.yaml)
+# now gates on binary_sensor.tublemetry_hot_tub_api_status == on as a CONDITION,
+# so it automatically pauses while the ESP32 is offline and re-applies the
+# correct setpoint on reconnect -- no manual re-enable required (reverses D-12).
 #
-# Note: thermal runaway automation already gates on ESP32 status (Plan 01).
+# Note: thermal runaway automation also gates on ESP32 status (Plan 01).
 # Drift detection already handles unknown/unavailable values (per D-10).
 
 automation:
   - alias: Hot Tub ESP32 Offline Detection
     description: >
-      Detects ESP32 offline status and takes protective action. Disables TOU
-      to prevent setpoint changes on stale data. Notifies user on recovery
-      but does NOT auto-re-enable TOU.
+      Detects ESP32 offline status and notifies the user. Does not disable the
+      TOU schedule -- the schedule self-pauses on stale data and resumes on
+      reconnect via its own condition.
     mode: single
 
     trigger:
@@ -43,8 +42,10 @@ automation:
               - action: system_log.write
                 data:
                   message: >
-                    ESP32 OFFLINE: Hot tub ESP32 lost connection. TOU schedule
-                    disabled. All sensor data may be stale.
+                    ESP32 OFFLINE: Hot tub ESP32 lost connection. All sensor data
+                    may be stale. TOU setpoint changes are paused automatically
+                    while offline; the schedule stays enabled and resumes on
+                    reconnect.
                   level: warning
                   logger: tubtron.stale_data
               - action: persistent_notification.create
@@ -52,25 +53,22 @@ automation:
                   title: "ESP32 OFFLINE - Hot Tub"
                   message: >
                     Hot tub ESP32 lost connection. All sensor data may be stale.
-                    TOU schedule disabled to prevent setpoint changes on stale data.
-                    Re-enable TOU manually after verifying hot tub state.
+                    TOU setpoint changes are paused automatically while offline
+                    and will resume when the ESP32 reconnects. No action needed.
                   notification_id: esp32_offline
-              - action: automation.turn_off
-                target:
-                  entity_id: automation.hot_tub_tou_schedule
         default:
           - action: system_log.write
             data:
               message: >
-                ESP32 ONLINE: Hot tub ESP32 reconnected. TOU schedule NOT
-                auto-re-enabled -- user must verify state and re-enable manually.
+                ESP32 ONLINE: Hot tub ESP32 reconnected. Sensor data is live
+                again. TOU schedule resumed and re-applied the current setpoint.
               level: info
               logger: tubtron.stale_data
           - action: persistent_notification.create
             data:
               title: "ESP32 ONLINE - Hot Tub"
               message: >
-                Hot tub ESP32 reconnected. Sensor data is live again.
-                TOU schedule was NOT auto-re-enabled. Verify hot tub state
-                and re-enable TOU manually if appropriate.
+                Hot tub ESP32 reconnected. Sensor data is live again. The TOU
+                schedule resumed automatically and re-applied the current
+                setpoint.
               notification_id: esp32_online

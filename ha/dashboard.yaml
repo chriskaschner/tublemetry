@@ -98,3 +98,26 @@ entities:
     name: Cooling Rate (°F/hr lost)
   - entity: sensor.outdoor_temperature
     name: Outdoor Temp
+
+---
+# Card 8: TOU schedule controls -- seasonal setpoints
+# Drag Max down to ~101 for summer, back to 104 for winter. Coast is the
+# on-peak / overnight floor. "Expected Now" is what the schedule is currently
+# targeting; "Commanded" is what HA sent; "Panel" is what the tub display shows.
+type: entities
+title: Hot Tub TOU Schedule
+entities:
+  - entity: input_number.hot_tub_max_setpoint
+    name: Max Setpoint (comfort)
+  - entity: input_number.hot_tub_coast_setpoint
+    name: Coast Setpoint (floor)
+  - entity: sensor.hot_tub_expected_setpoint
+    name: Expected Now
+  - entity: number.tublemetry_hot_tub_setpoint
+    name: Commanded Setpoint
+  - entity: sensor.tublemetry_hot_tub_detected_setpoint
+    name: Panel Setpoint
+  - entity: automation.hot_tub_tou_schedule
+    name: TOU Schedule
+  - entity: input_boolean.thermal_runaway_active
+    name: Thermal Runaway

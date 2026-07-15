@@ -22,7 +22,11 @@ AUTOMATION_FILES = [
     "thermal_runaway_clear.yaml",
     "stale_data.yaml",
     "drift_detection.yaml",
+    "tou_watchdog.yaml",
 ]
+
+# Files that are intentionally comment-only (deprecated / superseded).
+COMMENT_ONLY_FILES = {"heating_tracker.yaml", "sensors.yaml"}
 
 # HA domain keys recognized by the packages system
 HA_DOMAIN_KEYS = {
@@ -65,7 +69,7 @@ def test_all_yaml_single_document():
     for path in _package_files():
         text = path.read_text()
         data = yaml.safe_load(text)
-        assert data is not None or path.name == "heating_tracker.yaml", (
+        assert data is not None or path.name in COMMENT_ONLY_FILES, (
             f"{path.name} did not parse as valid YAML"
         )
 
@@ -178,9 +182,25 @@ def test_heater_power_already_valid():
     assert "template" in data, "heater_power.yaml missing 'template' top-level key"
 
 
-def test_sensors_already_valid():
-    """sensors.yaml has 'sql' as top-level key (no changes needed)."""
+def test_sensors_deprecated():
+    """sensors.yaml is comment-only now -- its sql sensors duplicated
+    thermal_model.yaml and were removed to stop ..._2 collisions."""
     path = HA_DIR / "sensors.yaml"
     data = yaml.safe_load(path.read_text())
-    assert isinstance(data, dict), "sensors.yaml did not parse as a dict"
-    assert "sql" in data, "sensors.yaml missing 'sql' top-level key"
+    assert data is None, (
+        f"sensors.yaml should be comment-only (deduped into thermal_model.yaml), got {type(data)}"
+    )
+
+
+def test_helpers_define_setpoint_sliders():
+    """helpers.yaml defines the two seasonal input_number sliders, bounded 80-104."""
+    path = HA_DIR / "helpers.yaml"
+    data = yaml.safe_load(path.read_text())
+    assert "input_number" in data, "helpers.yaml missing 'input_number' key"
+    inums = data["input_number"]
+    for name in ("hot_tub_max_setpoint", "hot_tub_coast_setpoint"):
+        assert name in inums, f"helpers.yaml missing input_number.{name}"
+        entry = inums[name]
+        assert entry["min"] == 80 and entry["max"] == 104, (
+            f"{name} must be bounded 80-104 (firmware clamp)"
+        )

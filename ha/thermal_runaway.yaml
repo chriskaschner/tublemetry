@@ -1,44 +1,67 @@
 # Thermal Runaway Protection -- Graduated Response
 #
-# Three-tier response to sustained temperature overshoot:
+# Three-tier response to sustained temperature overshoot WHILE THE HEATER IS ON:
 #   Warning (2-4F): Log + persistent notification. Monitoring only.
 #   Moderate (4-6F): Proportional setpoint reduction + runaway flag.
-#   Severe (>6F): Floor drop to 80F, disable TOU, set runaway flag.
+#   Severe (>6F): Floor drop to 80F, set runaway flag (blocks TOU until cleared).
 #
-# All tiers require 5-minute sustained overshoot before acting (D-02).
-# Trigger ordering matters in mode: single -- severe fires first if
-# multiple thresholds are met simultaneously.
+# SUMMER FIX: the relative tiers gate on binary_sensor heater == 'on'. A real
+# runaway means the heater is driving temperature above setpoint; when the TOU
+# schedule coasts the setpoint down (heater off, water merely coasting toward the
+# lower setpoint), water can sit above setpoint+6 without any danger -- that must
+# NOT trip these tiers. Previously it did, which floored the setpoint to 80F and
+# deadlocked (the clear never fired because summer water never cools to 80F).
 #
-# Per SAFE-01 decisions D-01 through D-04.
+# An absolute ceiling trigger (water > 107F) fires severe regardless of heater or
+# setpoint, as a scald backstop in case the heater bit or setpoint decode is wrong.
+#
+# All relative tiers require 5-minute sustained overshoot (D-02). Trigger ordering
+# matters in mode: single -- severe fires first if multiple thresholds are met.
+#
+# Per SAFE-01 decisions D-01 through D-04 (+ summer heater-gate revision).
 
 automation:
   - alias: Hot Tub Thermal Runaway Protection
     description: >
       Safety automation: graduated response to sustained temperature overshoot.
       Warning (2-4F): log + notify. Moderate (4-6F): proportional setpoint reduction + flag.
-      Severe (>6F): floor drop + disable TOU.
+      Severe (>6F): floor drop + runaway flag (blocks TOU until it auto-clears).
     mode: single
 
     trigger:
-      # SEVERE first -- trigger ordering matters in mode: single
+      # SEVERE (relative) -- heater ON and water > setpoint + 6, sustained 5 min.
+      # Trigger ordering matters in mode: single.
       - platform: template
         value_template: >
-          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
-             states('number.tublemetry_hot_tub_setpoint') | float(999) + 6 }}
+          {{ states('binary_sensor.tublemetry_hot_tub_heater') == 'on'
+             and states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+                 states('number.tublemetry_hot_tub_setpoint') | float(999) + 6 }}
         for:
           minutes: 5
         id: severe
+      # SEVERE (absolute ceiling) -- scald backstop, fires regardless of heater or
+      # setpoint. 107F = 3F above the 104F max setpoint (tunable).
       - platform: template
         value_template: >
-          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
-             states('number.tublemetry_hot_tub_setpoint') | float(999) + 4 }}
+          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) > 107 }}
+        for:
+          minutes: 2
+        id: severe
+      # MODERATE -- heater ON and water > setpoint + 4.
+      - platform: template
+        value_template: >
+          {{ states('binary_sensor.tublemetry_hot_tub_heater') == 'on'
+             and states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+                 states('number.tublemetry_hot_tub_setpoint') | float(999) + 4 }}
         for:
           minutes: 5
         id: moderate
+      # WARNING -- heater ON and water > setpoint + 2.
       - platform: template
         value_template: >
-          {{ states('sensor.tublemetry_hot_tub_temperature') | float(0) >
-             states('number.tublemetry_hot_tub_setpoint') | float(999) + 2 }}
+          {{ states('binary_sensor.tublemetry_hot_tub_heater') == 'on'
+             and states('sensor.tublemetry_hot_tub_temperature') | float(0) >
+                 states('number.tublemetry_hot_tub_setpoint') | float(999) + 2 }}
         for:
           minutes: 5
         id: warning
@@ -67,7 +90,7 @@ automation:
                     THERMAL RUNAWAY SEVERE: water {{ states('sensor.tublemetry_hot_tub_temperature') }}F
                     > setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F + 6F
                     for 5 min. Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}.
-                    Dropping setpoint to 80F, disabling TOU, setting runaway flag.
+                    Dropping setpoint to 80F, setting runaway flag (blocks TOU until cleared).
                   level: error
                   logger: tubtron.thermal_runaway
               - action: persistent_notification.create
@@ -78,15 +101,13 @@ automation:
                     setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F by >6F
                     for 5+ minutes.
                     Heater: {{ states('binary_sensor.tublemetry_hot_tub_heater') }}
-                    Setpoint dropped to 80F. TOU schedule disabled. Runaway flag set.
-                    MANUAL RE-ENABLE REQUIRED after investigation.
+                    Setpoint dropped to 80F. Runaway flag set -- TOU is blocked
+                    until the tub cools back to setpoint, then resumes
+                    automatically. Investigate the cause.
                   notification_id: thermal_severe
               - action: input_boolean.turn_on
                 target:
                   entity_id: input_boolean.thermal_runaway_active
-              - action: automation.turn_off
-                target:
-                  entity_id: automation.hot_tub_tou_schedule
               - action: number.set_value
                 target:
                   entity_id: number.tublemetry_hot_tub_setpoint

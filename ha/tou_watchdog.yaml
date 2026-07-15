@@ -1,0 +1,110 @@
+# TOU Watchdog -- "is the schedule actually working?" detection layer
+#
+# The self-healing schedule (tou_automation.yaml) applies the expected setpoint
+# on every boundary, HA start, and ESP32 reconnect. This watchdog catches the
+# cases where that still didn't take effect, and alerts the user:
+#
+#   1. setpoint_stuck: the confirmed setpoint (number.tublemetry_hot_tub_setpoint,
+#      which the firmware only publishes AFTER a successful injection -- D-14)
+#      disagrees with sensor.hot_tub_expected_setpoint for >15 min while the
+#      ESP32 is online and no thermal event is active. I.e. the schedule fired
+#      but the tub never reached the target (injection failing, HA was down at a
+#      boundary, or the schedule was disabled).
+#
+#   2. schedule_off: automation.hot_tub_tou_schedule has been disabled for >1 min.
+#      Nothing in this repo disables it anymore, so this means a human or a future
+#      automation turned it off.
+#
+# Complements drift_detection.yaml (hardware-level commanded-vs-panel) -- this is
+# the logic-level schedule-vs-actual check.
+#
+# Alerts go to both a persistent (in-app) notification and a phone push via
+# notify.mobile_app_chris_phone (discovered from the live instance).
+
+automation:
+  - alias: Hot Tub TOU Watchdog
+    description: >
+      Alerts when the confirmed setpoint stays out of step with the expected TOU
+      setpoint for >15 min, or when the TOU schedule has been disabled.
+    mode: single
+
+    trigger:
+      - platform: template
+        value_template: >
+          {% set cmd = states('number.tublemetry_hot_tub_setpoint') %}
+          {% set exp = states('sensor.hot_tub_expected_setpoint') %}
+          {{ cmd not in ['unknown', 'unavailable']
+             and exp not in ['unknown', 'unavailable']
+             and (cmd | int) != (exp | int)
+             and states('binary_sensor.tublemetry_hot_tub_api_status') == 'on'
+             and states('input_boolean.thermal_runaway_active') == 'off' }}
+        for:
+          minutes: 15
+        id: setpoint_stuck
+      - platform: state
+        entity_id: automation.hot_tub_tou_schedule
+        to: "off"
+        for:
+          minutes: 1
+        id: schedule_off
+
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: setpoint_stuck
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    TOU WATCHDOG: confirmed setpoint
+                    {{ states('number.tublemetry_hot_tub_setpoint') }}F != expected
+                    {{ states('sensor.hot_tub_expected_setpoint') }}F for >15 min
+                    (ESP32 online, no thermal event). Schedule not taking effect.
+                  level: warning
+                  logger: tubtron.tou_watchdog
+              - action: persistent_notification.create
+                data:
+                  title: "TOU NOT WORKING - Hot Tub"
+                  message: >
+                    The hot tub setpoint has been stuck at
+                    {{ states('number.tublemetry_hot_tub_setpoint') }}F while the
+                    schedule expects {{ states('sensor.hot_tub_expected_setpoint') }}F
+                    (>15 min). The schedule fired but the tub did not reach target.
+
+                    Check: is automation.hot_tub_tou_schedule enabled? Is button
+                    injection failing (see Setpoint Drift)? Panel shows
+                    {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F,
+                    retries {{ states('sensor.tublemetry_hot_tub_retry_count') }}.
+                  notification_id: tou_watchdog_stuck
+              - action: notify.mobile_app_chris_phone
+                data:
+                  title: "Hot Tub TOU not working"
+                  message: >
+                    Setpoint stuck at {{ states('number.tublemetry_hot_tub_setpoint') }}F;
+                    schedule expects {{ states('sensor.hot_tub_expected_setpoint') }}F.
+          - conditions:
+              - condition: trigger
+                id: schedule_off
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    TOU WATCHDOG: automation.hot_tub_tou_schedule is DISABLED.
+                    The tub will not follow the TOU schedule until re-enabled.
+                  level: warning
+                  logger: tubtron.tou_watchdog
+              - action: persistent_notification.create
+                data:
+                  title: "TOU SCHEDULE DISABLED - Hot Tub"
+                  message: >
+                    automation.hot_tub_tou_schedule has been turned off. The tub
+                    will not follow the time-of-use schedule until you re-enable
+                    it (Settings > Automations > Hot Tub TOU Schedule).
+                  notification_id: tou_watchdog_disabled
+              - action: notify.mobile_app_chris_phone
+                data:
+                  title: "Hot Tub schedule disabled"
+                  message: >
+                    automation.hot_tub_tou_schedule is off -- the tub won't follow
+                    the TOU schedule until re-enabled.

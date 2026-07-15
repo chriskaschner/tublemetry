@@ -19,27 +19,26 @@ def load_tou() -> dict:
     return data
 
 
-def extract_action_values(tou_config) -> list:
-    """Return all data.value fields from TOU choose action sequences."""
-    values = []
-    for item in tou_config.get("action", []):
-        if "choose" in item:
-            for choice in item["choose"]:
-                for act in choice.get("sequence", []):
-                    if "data" in act and "value" in act["data"]:
-                        values.append(act["data"]["value"])
-    return values
-
-
 def extract_all_actions(tou_config) -> list:
-    """Return all action dicts from TOU choose sequences."""
+    """Return all leaf action dicts (supports both choose sequences and the
+    current direct single-action form)."""
     actions = []
     for item in tou_config.get("action", []):
         if "choose" in item:
             for choice in item["choose"]:
-                for act in choice.get("sequence", []):
-                    actions.append(act)
+                actions.extend(choice.get("sequence", []))
+        else:
+            actions.append(item)
     return actions
+
+
+def extract_action_values(tou_config) -> list:
+    """Return all data.value fields from the TOU actions."""
+    return [
+        act["data"]["value"]
+        for act in extract_all_actions(tou_config)
+        if "value" in act.get("data", {})
+    ]
 
 
 class TestNumberEntityRange:
@@ -126,22 +125,20 @@ class TestTouAutomation:
                 f"TOU value {v} looks like a Celsius value -- must be integer degF"
             )
 
-    def test_degf_values_only(self, tou_config):
+    def test_setpoint_value_is_expected_sensor_template(self, tou_config):
+        """The setpoint is now driven by the expected-setpoint sensor (templated),
+        not hardcoded degF literals."""
         values = extract_action_values(tou_config)
-        valid_degf = {104, 102, 98, 96}
-        for v in values:
-            assert v in valid_degf, (
-                f"Unexpected TOU value {v} -- expected one of {valid_degf}"
-            )
+        assert len(values) == 1, f"Expected one apply action, got {len(values)}"
+        assert "sensor.hot_tub_expected_setpoint" in values[0]
 
-    def test_six_action_blocks(self, tou_config):
-        values = extract_action_values(tou_config)
-        assert len(values) == 6, f"Expected 6 TOU action values, got {len(values)}"
+    def test_single_apply_action(self, tou_config):
+        assert len(extract_all_actions(tou_config)) == 1
 
     def test_trigger_ids_present(self, tou_config):
         triggers = tou_config.get("trigger", [])
         trigger_ids = {t.get("id") for t in triggers if "id" in t}
-        expected = {"wd_preheat", "we_preheat", "wd_onpeak", "wd_eve_preheat", "wd_eve_full", "coast"}
+        expected = {"expected_changed", "ha_start", "esp32_online", "runaway_cleared"}
         assert expected == trigger_ids, (
-            f"Missing trigger IDs: {expected - trigger_ids}"
+            f"Trigger IDs mismatch: {expected ^ trigger_ids}"
         )

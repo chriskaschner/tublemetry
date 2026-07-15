@@ -1,28 +1,35 @@
 # Thermal Runaway Auto-Clear
 #
-# Clears the thermal_runaway_active flag when temperature returns to or below
-# the setpoint for 2+ minutes, indicating the overshoot has resolved.
+# Clears the thermal_runaway_active flag once the danger has resolved: the heater
+# is OFF (nothing is driving the temperature up) AND water is below the safety
+# ceiling (107F). Sustained 3 minutes.
 #
-# This ONLY clears the flag -- it does NOT re-enable TOU automation.
-# After a severe event, the user must manually re-enable TOU (per D-08).
-# After a moderate event, clearing the flag allows TOU to resume raising
-# setpoint on its next scheduled trigger.
+# This replaces the old "water <= setpoint" clear, which deadlocked: a severe
+# event floors the setpoint to 80F, and summer water never cools to 80F, so the
+# flag never cleared. Heater-off + below-ceiling reliably clears after a real or
+# spurious event, yet stays latched during a genuine stuck-heater fault (heater
+# never reads off), keeping the schedule blocked and alerts firing.
+#
+# The TOU schedule stays enabled throughout (it is gated by the flag as a
+# CONDITION, not disabled), so clearing the flag lets the schedule re-apply the
+# correct setpoint immediately via its runaway_cleared trigger. Recovery is
+# automatic for both moderate and severe events.
 
 automation:
   - alias: Hot Tub Thermal Runaway Clear
     description: >
-      Clears thermal_runaway_active flag when temperature returns to setpoint.
-      Does NOT re-enable TOU automation -- that requires manual intervention
-      after severe events.
+      Clears thermal_runaway_active once the heater is off and water is below the
+      107F ceiling for 3 minutes. The TOU schedule re-applies the correct setpoint
+      automatically once the flag clears (via its runaway_cleared trigger).
     mode: single
 
     trigger:
       - platform: template
         value_template: >
-          {{ states('sensor.tublemetry_hot_tub_temperature') | float(999) <=
-             states('number.tublemetry_hot_tub_setpoint') | float(0) }}
+          {{ states('binary_sensor.tublemetry_hot_tub_heater') == 'off'
+             and states('sensor.tublemetry_hot_tub_temperature') | float(999) < 107 }}
         for:
-          minutes: 2
+          minutes: 3
 
     condition:
       - condition: state
@@ -31,7 +38,7 @@ automation:
       - condition: template
         value_template: >
           {{ states('sensor.tublemetry_hot_tub_temperature') not in ['unknown', 'unavailable']
-             and states('number.tublemetry_hot_tub_setpoint') not in ['unknown', 'unavailable'] }}
+             and states('binary_sensor.tublemetry_hot_tub_heater') not in ['unknown', 'unavailable'] }}
       - condition: state
         entity_id: binary_sensor.tublemetry_hot_tub_api_status
         state: "on"
@@ -44,8 +51,8 @@ automation:
         data:
           title: "THERMAL RUNAWAY CLEARED - Hot Tub"
           message: >
-            Temperature {{ states('sensor.tublemetry_hot_tub_temperature') }}F
-            returned to setpoint {{ states('number.tublemetry_hot_tub_setpoint') }}F.
-            Runaway flag cleared. TOU may resume on next scheduled trigger
-            (if TOU automation is still enabled).
+            Heater is off and water
+            {{ states('sensor.tublemetry_hot_tub_temperature') }}F is below the
+            107F ceiling. Runaway flag cleared. The TOU schedule has resumed and
+            re-applied the current setpoint.
           notification_id: thermal_cleared
