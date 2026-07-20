@@ -75,7 +75,7 @@ CANONICAL_CORE = {
     "Hot Tub Refresh Thermal Model",
 }
 # Added by this project; absence before deploy is expected (reported INFO, not WARN).
-NEW_AUTOMATIONS = {"Hot Tub TOU Watchdog"}
+NEW_AUTOMATIONS = {"Hot Tub TOU Watchdog", "Backup Dead-Man Alert", "AC Compressor Not Cooling"}
 
 # Schedule boundaries (local time) the setpoint should step at.
 TOU_TRANSITIONS = ["04:30", "05:00", "10:00", "17:30", "19:00", "22:00"]

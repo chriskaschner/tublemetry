@@ -1,0 +1,111 @@
+# AC Compressor "commanded but not cooling" watchdog.
+#
+# Detects the failure the user cares about: the ecobee calls for cooling but the
+# space does not actually cool (compressor not running, low refrigerant, frozen
+# coil, airflow). Whole-home Enphase consumption proved too noisy to detect the
+# ~2.5 kW compressor step (baseline swings 5-11 kW), so this uses a NOISE-IMMUNE
+# thermal check instead of electrical:
+#
+#   FAULT = the ecobee has commanded the compressor (equipment_running contains
+#   'compCool') continuously for >= 90 min, but indoor temperature has NOT
+#   dropped >= 0.3 F and is still above setpoint.
+#
+# Calibrated to the observed cooling rate ~1 F/hr (2026-07-20): a healthy unit
+# drops ~1.5 F in 90 min, so <0.3 F drop over 90 min means it is not really
+# cooling. (The original 1 F/20 min threshold false-alarmed on the normal slow
+# rate.) STOPGAP ONLY: room-temp detection is inherently slow and confounded by
+# outdoor heat gain (a working AC can hold temp flat on a very hot afternoon and
+# still trip this). The real fix is a SUPPLY-AIR (duct) temperature sensor --
+# supply drops ~15-20 F below return within ~1-2 min of the compressor running,
+# giving a fast, noise-immune signal. ESPHome DS18B20 probe recommended (TODO).
+# Electrical detection via whole-home Enphase was rejected: measured compressor
+# step ~2.79 kW but the baseline swings 5-11 kW, so it is unusable without a
+# dedicated CT clamp.
+#
+# Signal notes:
+# - equipment_running is the ecobee's raw equipment status ("fan",
+#   "compCool1,fan", etc.) -- more reliable than hvac_action. The ecobee
+#   integration polls ~every 3 min, so both lag reality ~3 min; the 20-min
+#   window absorbs that latency.
+# - current_temperature / temperature (setpoint) come from climate.my_ecobee.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+template:
+  # Is the ecobee currently commanding the compressor to cool?
+  - binary_sensor:
+      - name: "AC Cooling Commanded"
+        unique_id: ac_cooling_commanded
+        icon: mdi:snowflake-alert
+        state: >
+          {{ 'compCool' in (state_attr('climate.my_ecobee', 'equipment_running') | string) }}
+        availability: >
+          {{ state_attr('climate.my_ecobee', 'equipment_running') is not none }}
+
+  # Capture indoor temp at the moment a cooling call begins, so we can measure
+  # how far it has (or has not) dropped since.
+  - trigger:
+      - platform: state
+        entity_id: binary_sensor.ac_cooling_commanded
+        to: "on"
+    sensor:
+      - name: "AC Cooling Start Temp"
+        unique_id: ac_cooling_start_temp
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state: "{{ state_attr('climate.my_ecobee', 'current_temperature') | float(none) }}"
+
+automation:
+  - alias: "AC Compressor Not Cooling"
+    id: ac_compressor_not_cooling
+    description: >
+      Alerts if the ecobee has commanded cooling for >=90 min but indoor temp
+      has not dropped >=0.3 F and is still above setpoint -- i.e. the compressor
+      is commanded but the space is not actually cooling. Tuned to ~1 F/hr rate.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.ac_cooling_commanded
+        to: "on"
+        for:
+          minutes: 90
+    condition:
+      - condition: template
+        value_template: >
+          {% set cur = state_attr('climate.my_ecobee', 'current_temperature') | float(none) %}
+          {% set sp  = state_attr('climate.my_ecobee', 'temperature') | float(none) %}
+          {% set start = states('sensor.ac_cooling_start_temp') | float(none) %}
+          {{ cur is not none and sp is not none and start is not none
+             and cur > sp
+             and (start - cur) < 0.3 }}
+    action:
+      - action: system_log.write
+        data:
+          level: warning
+          logger: tubtron.ac_monitor
+          message: >
+            AC WATCHDOG: cooling commanded >=20 min but indoor temp has not
+            dropped (start={{ states('sensor.ac_cooling_start_temp') }}F,
+            now={{ state_attr('climate.my_ecobee','current_temperature') }}F,
+            setpoint={{ state_attr('climate.my_ecobee','temperature') }}F).
+            Compressor may not be running -- check the outdoor unit.
+      - action: persistent_notification.create
+        data:
+          title: "AC not cooling"
+          notification_id: ac_not_cooling
+          message: >
+            The ecobee has been calling for cooling for 20+ minutes but the
+            indoor temperature has not dropped
+            (start {{ states('sensor.ac_cooling_start_temp') }}F ->
+            now {{ state_attr('climate.my_ecobee','current_temperature') }}F,
+            setpoint {{ state_attr('climate.my_ecobee','temperature') }}F).
+            Check the outdoor compressor.
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "AC not cooling"
+          message: >
+            Cooling called 20+ min, indoor temp not dropping
+            ({{ states('sensor.ac_cooling_start_temp') }}F ->
+            {{ state_attr('climate.my_ecobee','current_temperature') }}F,
+            set {{ state_attr('climate.my_ecobee','temperature') }}F).
+            Check the compressor.

@@ -23,6 +23,8 @@ AUTOMATION_FILES = [
     "stale_data.yaml",
     "drift_detection.yaml",
     "tou_watchdog.yaml",
+    "deadman_backup_alert.yaml",
+    "ac_compressor_monitor.yaml",
 ]
 
 # Files that are intentionally comment-only (deprecated / superseded).
