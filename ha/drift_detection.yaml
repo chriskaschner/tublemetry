@@ -58,7 +58,7 @@ automation:
             Check the hot tub display manually.
           notification_id: setpoint_drift
 
-      - action: notify.mobile_app_chris_phone
+      - action: notify.mobile_app_chris_iphone
         data:
           title: "Hot Tub setpoint drift"
           message: >

@@ -6,15 +6,19 @@ input_boolean:
 # Seasonal setpoint sliders. sensor.hot_tub_expected_setpoint (templates.yaml)
 # reads these live, so adjusting a season is just dragging a slider -- no YAML
 # edit. min/max 80-104 enforce the firmware safety clamp (button_injector.h
-# TEMP_FLOOR/CEILING). `initial` sets the first-boot value; the user's later
-# changes persist across restarts (restore takes precedence over `initial`).
+# TEMP_FLOOR/CEILING).
+# NO `initial:` on purpose: in HA, setting `initial` re-applies that value on
+# EVERY restart (it overrides restore_state), silently wiping a seasonal setting
+# on every reboot/update. Omitting it lets restore_state persist the user's last
+# slider value across restarts -- the behavior we want. Tradeoff: on a brand-new
+# install with no stored state, sliders default to min (80F), safe-but-cold,
+# until set once.
 input_number:
   hot_tub_max_setpoint:
     name: "Hot Tub Max Setpoint"
     min: 80
     max: 104
     step: 1
-    initial: 104          # winter comfort temp; drop to ~101 for summer
     unit_of_measurement: "°F"
     icon: mdi:thermometer-high
 
@@ -23,6 +27,5 @@ input_number:
     min: 80
     max: 104
     step: 1
-    initial: 96           # on-peak / overnight floor
     unit_of_measurement: "°F"
     icon: mdi:thermometer-low

@@ -19,7 +19,7 @@
 # the logic-level schedule-vs-actual check.
 #
 # Alerts go to both a persistent (in-app) notification and a phone push via
-# notify.mobile_app_chris_phone (discovered from the live instance).
+# notify.mobile_app_chris_iphone (discovered from the live instance).
 
 automation:
   - alias: Hot Tub TOU Watchdog
@@ -77,7 +77,7 @@ automation:
                     {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F,
                     retries {{ states('sensor.tublemetry_hot_tub_retry_count') }}.
                   notification_id: tou_watchdog_stuck
-              - action: notify.mobile_app_chris_phone
+              - action: notify.mobile_app_chris_iphone
                 data:
                   title: "Hot Tub TOU not working"
                   message: >
@@ -102,7 +102,7 @@ automation:
                     will not follow the time-of-use schedule until you re-enable
                     it (Settings > Automations > Hot Tub TOU Schedule).
                   notification_id: tou_watchdog_disabled
-              - action: notify.mobile_app_chris_phone
+              - action: notify.mobile_app_chris_iphone
                 data:
                   title: "Hot Tub schedule disabled"
                   message: >
