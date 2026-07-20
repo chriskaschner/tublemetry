@@ -1,0 +1,145 @@
+# Dead-Man Backup Alert -- "are backups actually still running?" detection layer
+#
+# A backup regime that fails silently is worse than none -- it gives false
+# confidence right up until the restore you cannot do. This watchdog catches the
+# case where the automatic backup schedule has quietly stopped producing good
+# backups, and alerts the user, matching the tou_watchdog.yaml / stale_data.yaml
+# pattern (system_log + persistent notification + phone push).
+#
+# It fires when EITHER:
+#
+#   1. backup_stale: sensor.backup_last_successful_automatic_backup is more than
+#      ~48h old (or missing/unknown/unavailable). The native Backup integration
+#      updates this timestamp only after an automatic backup SUCCEEDS to its
+#      configured locations, so >48h means the daily job stopped succeeding
+#      (NAS asleep, Drive token expired, HA down at backup time, disk full, etc.).
+#      Re-evaluated every 6h via a time_pattern heartbeat, because a purely
+#      template-based staleness check would not re-fire on the passage of time
+#      alone.
+#
+#   2. backup_failed: the last automatic backup event reported a failure. This is
+#      the immediate signal (do not wait up to 6h for the heartbeat). It triggers
+#      on any state change of event.backup_automatic_backup and then checks the
+#      event_type for a failure.
+#
+# ENTITIES (verified against current HA docs, Backup integration):
+#   - sensor.backup_last_successful_automatic_backup  (device_class: timestamp)
+#   - event.backup_automatic_backup                   (attr: event_type)
+#   NOTE: some backup entities are DISABLED by default. Before relying on this,
+#   confirm sensor.backup_last_successful_automatic_backup exists and is enabled
+#   (Settings > Devices & Services > Entities > search "backup").
+#
+#   The exact event_type string for a failed automatic backup should be confirmed
+#   once on the live instance: trigger/observe a failure (or read
+#   Developer Tools > States > event.backup_automatic_backup attributes). The
+#   template below matches on the substring "fail" to be resilient to the exact
+#   wording (e.g. "automatic_backup_failed"); tighten it once confirmed.
+#
+# DEPLOYMENT: this belongs in the tublemetry-ha DEPLOY repo under
+#   packages/deadman_backup_alert.yaml  (NOT a UI-clicked automation).
+#   It is a top-level `automation:` package, identical in shape to tou_watchdog.yaml
+#   and stale_data.yaml, and it must live in the git/declarative layer so it
+#   survives the exact host rebuild it is designed to defend against. A watchdog
+#   that only exists inside the system it watches is self-defeating.
+#
+# Alerts go to a persistent (in-app) notification and a phone push via
+# notify.mobile_app_chris_phone (same notify service the other packages use).
+
+automation:
+  - alias: Backup Dead-Man Alert
+    description: >
+      Alerts if no successful automatic backup has completed in ~48h (or the
+      last-successful timestamp is missing), or if the most recent automatic
+      backup reported a failure. Guards against silent backup failure.
+    mode: single
+
+    trigger:
+      # Heartbeat: re-evaluate staleness every 6 hours.
+      - platform: time_pattern
+        hours: "/6"
+        id: heartbeat
+      # Immediate: an automatic backup event just changed -- check for failure.
+      - platform: state
+        entity_id: event.backup_automatic_backup
+        id: backup_event
+
+    action:
+      - choose:
+          # ---- Branch 1: the last automatic backup FAILED (immediate) --------
+          - conditions:
+              - condition: trigger
+                id: backup_event
+              - condition: template
+                value_template: >
+                  {{ 'fail' in (state_attr('event.backup_automatic_backup',
+                                           'event_type') | default('') | lower) }}
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    BACKUP DEAD-MAN: the last automatic backup reported FAILURE
+                    (event_type={{ state_attr('event.backup_automatic_backup',
+                    'event_type') }}). No new good backup was produced. Check the
+                    Backups page, NAS availability, and Google Drive auth.
+                  level: warning
+                  logger: tubtron.deadman_backup
+              - action: persistent_notification.create
+                data:
+                  title: "BACKUP FAILED - Home Assistant"
+                  message: >
+                    The most recent automatic backup FAILED
+                    ({{ state_attr('event.backup_automatic_backup', 'event_type') }}).
+                    Your 3-2-1 backup is not current. Check Settings > System >
+                    Backups: is the DS218+ share reachable, is Google Drive still
+                    authorized, is there free space?
+                    Last SUCCESSFUL backup:
+                    {{ states('sensor.backup_last_successful_automatic_backup') }}.
+                  notification_id: deadman_backup_failed
+              - action: notify.mobile_app_chris_phone
+                data:
+                  title: "HA backup FAILED"
+                  message: >
+                    Last automatic backup failed. 3-2-1 not current -- check
+                    NAS/Drive/space. Last good backup:
+                    {{ states('sensor.backup_last_successful_automatic_backup') }}.
+
+          # ---- Branch 2: no successful backup in ~48h (heartbeat) ------------
+          - conditions:
+              - condition: trigger
+                id: heartbeat
+              - condition: template
+                value_template: >
+                  {% set ts = states('sensor.backup_last_successful_automatic_backup') %}
+                  {% if ts in ['unknown', 'unavailable', 'none', ''] %}
+                    true
+                  {% else %}
+                    {{ (now() - as_datetime(ts)).total_seconds() > 48 * 3600 }}
+                  {% endif %}
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    BACKUP DEAD-MAN: no successful automatic backup in >48h
+                    (last success: {{ states('sensor.backup_last_successful_automatic_backup') }}).
+                    The daily backup job has stopped succeeding to its locations.
+                  level: warning
+                  logger: tubtron.deadman_backup
+              - action: persistent_notification.create
+                data:
+                  title: "NO BACKUP IN 48H - Home Assistant"
+                  message: >
+                    No successful automatic backup has completed in over 48 hours.
+                    Last success:
+                    {{ states('sensor.backup_last_successful_automatic_backup') }}.
+                    The daily job is not producing backups. Check Settings > System >
+                    Backups, the DS218+ SMB share (asleep/offline?), Google Drive
+                    authorization (token expired?), and available disk space.
+                  notification_id: deadman_backup_stale
+              - action: notify.mobile_app_chris_phone
+                data:
+                  title: "HA has no recent backup"
+                  message: >
+                    No successful backup in >48h (last:
+                    {{ states('sensor.backup_last_successful_automatic_backup') }}).
+                    Daily backups have stopped -- check NAS, Google Drive auth, and
+                    free space.
