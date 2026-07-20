@@ -94,6 +94,11 @@ class ButtonInjector {
   /// Used during PROBING and VERIFYING to read the current setpoint.
   void feed_display_temperature(float temp);
 
+  /// Feed a CONFIRMED setpoint (captured via the panel's set-mode flash).
+  /// Used by VERIFYING as the sole source of truth -- unlike raw display
+  /// temperature, this cannot be the idle water-temperature reading.
+  void feed_confirmed_setpoint(float temp);
+
   /// Abort any in-progress sequence and return to IDLE.
   void abort();
 
@@ -142,6 +147,9 @@ class ButtonInjector {
   uint32_t last_action_ms_{0};     // millis() of last pin state change
   float last_display_temp_{NAN};   // last temperature fed from display stream
   float probed_setpoint_{NAN};     // setpoint captured during PROBING phase
+  // Confirmed setpoint (set-mode flash) used for closed-loop verification.
+  float confirmed_setpoint_{NAN};
+  uint32_t confirmed_setpoint_seen_ms_{0};
 
   // Diagnostics
   uint32_t sequence_count_{0};

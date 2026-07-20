@@ -403,8 +403,11 @@ void TublemetryDisplay::classify_display_state_(const std::string &display_str) 
         this->detected_setpoint_ = this->set_temp_potential_;
         if (this->detected_setpoint_sensor_ != nullptr)
           this->detected_setpoint_sensor_->publish_state(this->detected_setpoint_);
-        if (this->injector_ != nullptr)
+        if (this->injector_ != nullptr) {
           this->injector_->set_known_setpoint(this->detected_setpoint_);
+          // Closed-loop verification: only a CONFIRMED setpoint flash counts.
+          this->injector_->feed_confirmed_setpoint(this->detected_setpoint_);
+        }
         ESP_LOGI(TAG, "Setpoint detected: %.0fF", this->detected_setpoint_);
         this->last_setpoint_capture_ms_ = millis();
       }

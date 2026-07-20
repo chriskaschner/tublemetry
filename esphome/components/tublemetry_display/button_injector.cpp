@@ -291,17 +291,44 @@ void ButtonInjector::loop_verifying_() {
   uint32_t now = millis();
   uint32_t elapsed = now - this->phase_start_ms_;
 
-  if (!std::isnan(this->last_display_temp_) &&
-      this->last_display_temp_ == this->target_temp_) {
-    ESP_LOGI(TAG, "Verified: display shows %.0fF — sequence successful", this->target_temp_);
-    this->finish_sequence_(InjectorResult::SUCCESS);
-    return;
+  // Verification MUST use a CONFIRMED setpoint captured during THIS verify window
+  // (set-mode flash). Raw display temperature is the idle WATER temperature in
+  // normal mode and can coincidentally equal the target -> false success (Defect 2).
+  bool have_fresh_confirm =
+      !std::isnan(this->confirmed_setpoint_) &&
+      this->confirmed_setpoint_seen_ms_ >= this->phase_start_ms_;
+
+  if (have_fresh_confirm) {
+    if (this->confirmed_setpoint_ == this->target_temp_) {
+      ESP_LOGI(TAG, "Verified: confirmed setpoint %.0fF == target -- success", this->target_temp_);
+      this->finish_sequence_(InjectorResult::SUCCESS);
+      return;
+    }
+
+    // Panel is short of (or past) target -- e.g. the Balboa wake/flash press was
+    // consumed without changing the setpoint (Defect 1). Drive the remaining delta
+    // within the N+2 budget. This closed loop is immune to the wake press.
+    int remaining = static_cast<int>(roundf(this->target_temp_)) -
+                    static_cast<int>(roundf(this->confirmed_setpoint_));
+    if (remaining != 0 && this->presses_consumed_ < this->press_budget_) {
+      uint8_t budget_left = this->press_budget_ - this->presses_consumed_;
+      uint8_t more = static_cast<uint8_t>(std::abs(remaining));
+      if (more > budget_left) more = budget_left;
+      this->adjusting_up_ = (remaining > 0);
+      this->presses_remaining_ = more;
+      this->presses_total_ = more;  // keep presses_consumed_/press_budget_ intact
+      ESP_LOGW(TAG, "Setpoint short: confirmed %.0fF, target %.0fF -- %d more %s-press(es)",
+               this->confirmed_setpoint_, this->target_temp_, (int) more,
+               this->adjusting_up_ ? "up" : "down");
+      this->transition_to_(InjectorPhase::ADJUSTING);
+      return;
+    }
   }
 
   if (elapsed >= this->verify_timeout_ms_) {
-    ESP_LOGW(TAG, "Verification timeout after %dms — display shows %.0fF, expected %.0fF",
+    ESP_LOGW(TAG, "Verification timeout after %dms -- confirmed setpoint %.0fF, expected %.0fF",
              (int) elapsed,
-             std::isnan(this->last_display_temp_) ? -1.0f : this->last_display_temp_,
+             std::isnan(this->confirmed_setpoint_) ? -1.0f : this->confirmed_setpoint_,
              this->target_temp_);
     this->finish_sequence_(InjectorResult::TIMEOUT, "verification timeout");
   }
@@ -425,6 +452,11 @@ void ButtonInjector::loop_refreshing_() {
 
 void ButtonInjector::feed_display_temperature(float temp) {
   this->last_display_temp_ = temp;
+}
+
+void ButtonInjector::feed_confirmed_setpoint(float temp) {
+  this->confirmed_setpoint_ = temp;
+  this->confirmed_setpoint_seen_ms_ = millis();
 }
 
 // --- Abort ---
