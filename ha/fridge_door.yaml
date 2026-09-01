@@ -18,6 +18,35 @@
 # would reset your tuning on every restart), so the slider comes up at its
 # minimum -- which is set to 3 so the unconfigured default is the intended one.
 #
+# NO TAMPER ALERT -- INVESTIGATED 2026-08-31, BLOCKED ON deCONZ
+# -------------------------------------------------------------
+# The SNZB-04PR2 hardware HAS a tamper switch, but it is unreachable from HA
+# today. Do not re-derive this:
+#
+#   - HA exposes only 3 entities for the device. Checked the ENTITY REGISTRY, not
+#     just the state machine -- there is no disabled tamper entity hiding either.
+#   - deCONZ 2.33.2 (add-on 8.7.2) is already current. Add-on 8.8.0 only swaps the
+#     base image to trixie; it does NOT bump deCONZ. Updating does not help.
+#   - Root cause: devices/sonoff/snzb-04_open_close_sensor.json defines items
+#     state/open, state/lowbattery, config/battery, config/enrolled,
+#     config/reachable -- and NO tamper item. The SNZB-04PR2 was added by cloning
+#     the plain SNZB-04 (PR #8598), which has no tamper switch at all. deCONZ
+#     parses only the IAS Zone alarm bit and discards the tamper bit.
+#   - Confirmed empirically: tripping the tamper switch on the live device emits
+#     NO deconz_event and no attribute change. It only produces sub-second
+#     open->close pulses on binary_sensor.openclose_5 (measured: 20:32:32 on ->
+#     20:32:33 off, then on->off inside the same second).
+#
+# A short-pulse heuristic was considered and REJECTED (user, 2026-08-31): a door
+# slam or reed-switch chatter would false-trigger it, and a tamper alert you
+# learn to distrust is worse than none.
+#
+# THE REAL FIX when host file access is convenient: copy the stock DDF into
+# /config/deconz/devices/ and add a state/tampered item bound to bit 2 of the IAS
+# Zone Status attribute. deCONZ prefers user DDFs over bundled ones, and HA's
+# deCONZ integration already renders state/tampered as a tamper binary sensor.
+# Then wire the alert here using the REAL entity id -- do not guess it.
+#
 # Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
 
 input_number:
