@@ -11,6 +11,12 @@
 #      but the tub never reached the target (injection failing, HA was down at a
 #      boundary, or the schedule was disabled).
 #
+#      Suppressed while input_boolean.hot_tub_manual_override is on: during a
+#      deliberate button override (hot_tub_button.yaml) the commanded setpoint is
+#      SUPPOSED to disagree with the expected one, so alerting on it would page
+#      the user for working as designed. The override self-expires at the next
+#      TOU boundary, so this can only mask the alert for at most one TOU window.
+#
 #   2. schedule_off: automation.hot_tub_tou_schedule has been disabled for >1 min.
 #      Nothing in this repo disables it anymore, so this means a human or a future
 #      automation turned it off.
@@ -37,7 +43,8 @@ automation:
              and exp not in ['unknown', 'unavailable']
              and (cmd | int) != (exp | int)
              and states('binary_sensor.tublemetry_hot_tub_api_status') == 'on'
-             and states('input_boolean.thermal_runaway_active') == 'off' }}
+             and states('input_boolean.thermal_runaway_active') == 'off'
+             and states('input_boolean.hot_tub_manual_override') == 'off' }}
         for:
           minutes: 15
         id: setpoint_stuck

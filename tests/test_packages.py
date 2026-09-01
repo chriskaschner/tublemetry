@@ -25,6 +25,9 @@ AUTOMATION_FILES = [
     "tou_watchdog.yaml",
     "deadman_backup_alert.yaml",
     "ac_compressor_monitor.yaml",
+    "hot_tub_button.yaml",
+    "ac_vent_monitor.yaml",
+    "fridge_door.yaml",
 ]
 
 # Files that are intentionally comment-only (deprecated / superseded).

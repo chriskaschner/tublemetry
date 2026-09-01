@@ -40,6 +40,23 @@ automation:
         to: "off"
         id: runaway_cleared
     condition:
+      # Yield to a manual button override (hot_tub_button.yaml), EXCEPT at a real
+      # TOU boundary or after a thermal-runaway clear, where the schedule and
+      # safety must win. Without this, a deliberate press would be silently
+      # reverted by the next ESP32 reconnect -- routine at the tub's ~-81 dBm
+      # WiFi -- making the physical button feel broken at random.
+      # hot_tub_override_expiry drops the flag on the same boundary trigger, so
+      # allowing these two trigger ids through is what makes the override expire
+      # rather than fight.
+      - condition: or
+        conditions:
+          - condition: trigger
+            id:
+              - expected_changed
+              - runaway_cleared
+          - condition: state
+            entity_id: input_boolean.hot_tub_manual_override
+            state: "off"
       # Block setpoint changes when thermal runaway is active (SAFE-02, D-06)
       - condition: state
         entity_id: input_boolean.thermal_runaway_active

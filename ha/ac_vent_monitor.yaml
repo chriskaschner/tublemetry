@@ -1,0 +1,291 @@
+# AC supply-air (vent) compressor watchdog -- SONOFF SNZB-02B via deCONZ
+#
+# This is the "real fix" that ac_compressor_monitor.yaml's header calls for. That
+# package infers compressor health from INDOOR temperature, which moves at only
+# ~1 F/hr, so it needs 90 minutes to reach a verdict and a working AC can hold
+# temp flat on a hot afternoon and still trip it. Supply air is a far better
+# signal: it drops well below room temperature within a minute or two of the
+# compressor actually running, and it does not care how hot it is outside.
+#
+# FAULT = the ecobee has commanded cooling continuously for N minutes
+#         (input_number.ac_vent_confirm_minutes) but the vent is not measurably
+#         colder than the room (delta < input_number.ac_vent_delta_threshold).
+#
+# ac_compressor_monitor.yaml has been demoted to log-only so a single failure
+# does not page twice; it stays in place as a fallback for the case this package
+# cannot cover, namely the Zigbee vent sensor dropping off the mesh or its
+# battery dying. The "AC Vent Sensor Offline" automation below covers that case
+# directly.
+#
+# CALIBRATION -- MEASURED 2026-08-31
+# ----------------------------------
+# The correct delta depends entirely on placement: a probe IN the duct sees the
+# textbook 15-20 F split, a sensor merely NEAR a register sees a blend of supply
+# and room air and may only show 5-8 F. Guessing produces either false alarms or
+# silence, so this was measured rather than assumed.
+#
+# Observed on the live system with the sensor mounted on the vent and the
+# compressor confirmed running (equipment_running = "compCool1,fan"):
+#
+#     indoor 73.9 F, vent 60.08 F -> delta 13.8 F
+#     indoor 73.9 F, vent 57.74 F -> delta 16.2 F   (still falling)
+#
+# So a known-good cooling cycle sits around 14-16 F. Recommended threshold is
+# roughly half of the observed steady state: ~7 F. Half leaves headroom for a hot
+# day or a dirty filter without going numb to a genuinely dead compressor.
+#
+# NOTE the sensor is slow to equilibrate after mounting -- it read within 0.5 F of
+# room temperature for several minutes after being placed, which looks exactly
+# like a dead compressor. That settling time is why ac_vent_confirm_minutes has a
+# floor of 10 minutes.
+#
+# To re-calibrate after moving it: run the AC 15 min, watch sensor.ac_vent_delta
+# in History, take the steady-state value, halve it.
+#
+# All thresholds are sliders on purpose -- retuning after moving the sensor is a
+# drag, not a YAML edit and redeploy. None declares `initial:`, for the reason
+# documented in helpers.yaml (it would silently reset your tuning on every
+# restart), so each comes up at its minimum until set once.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+input_number:
+  ac_vent_delta_threshold:
+    name: "AC Vent Delta Threshold"
+    # Minimum how-much-colder-than-the-room the vent must be for cooling to
+    # count as real. Floor of 2 F keeps an unconfigured slider conservative:
+    # it only fires when the vent is basically at room temperature.
+    min: 2
+    max: 25
+    step: 0.5
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-minus
+
+  ac_vent_stale_hours:
+    name: "AC Vent Stale Hours"
+    # How long the vent sensor may stay silent before it is called dead.
+    #
+    # This started at a hardcoded 1 hour and that was WRONG. Measured on the live
+    # device 2026-08-31: the SNZB-02B reports on CHANGE (~0.5 F), not on a
+    # dependable heartbeat. Recorder history showed only 4 points across 6 hours
+    # while the sensor sat in still air -- including a single 5.5-hour gap. A
+    # 1-hour window would have cried "sensor offline" every night once the AC
+    # stopped cycling and the vent temperature went flat.
+    #
+    # 3 hours is the floor because this alert is for a slow-burn failure (dead
+    # battery, dropped off the mesh). Being late on that is harmless; crying wolf
+    # nightly gets the alert ignored, which is not.
+    min: 3
+    max: 24
+    step: 1
+    unit_of_measurement: "h"
+    icon: mdi:timer-alert
+
+  ac_vent_confirm_minutes:
+    name: "AC Vent Confirm Minutes"
+    # How long the "commanded but not cold" condition must hold before alerting.
+    # Must exceed the ecobee's ~3 min poll lag plus the SNZB-02B's own settling
+    # time. Min is 10 (not 5) so the unconfigured default lands on the intended
+    # value rather than something too twitchy to trust.
+    min: 10
+    max: 60
+    step: 5
+    unit_of_measurement: "min"
+    icon: mdi:timer-sand
+
+input_boolean:
+  ac_vent_fault_active:
+    name: "AC Vent Fault Active"
+    icon: mdi:air-conditioner
+
+template:
+  - sensor:
+      # The calibration instrument and the signal the watchdog runs on.
+      # Positive = vent is colder than the room = cooling is really happening.
+      - name: "AC Vent Delta"
+        unique_id: ac_vent_delta
+        unit_of_measurement: "°F"
+        state_class: measurement
+        icon: mdi:delta
+        state: >-
+          {% set indoor = state_attr('climate.my_ecobee', 'current_temperature') %}
+          {% set vent = states('sensor.temperature_3') %}
+          {% if indoor is not none and vent not in ['unknown', 'unavailable'] %}
+            {{ (indoor | float - vent | float) | round(2) }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+        availability: >-
+          {{ state_attr('climate.my_ecobee', 'current_temperature') is not none
+             and states('sensor.temperature_3') not in ['unknown', 'unavailable'] }}
+
+  - binary_sensor:
+      # Making the vent sensor primary means a dead sensor is a silent loss of
+      # coverage. This makes that state explicit and alertable.
+      #
+      # last_reported (not last_changed) is the right clock: it advances on every
+      # report even when the temperature is unchanged, so a stable reading is not
+      # mistaken for a dead radio. The window is deliberately generous -- see the
+      # ac_vent_stale_hours notes above for the measurement that forced it.
+      - name: "AC Vent Sensor Healthy"
+        unique_id: ac_vent_sensor_healthy
+        device_class: problem
+        icon: mdi:access-point-check
+        state: >-
+          {% set s = states.sensor.temperature_3 %}
+          {% set window = (states('input_number.ac_vent_stale_hours') | float(3)) * 3600 %}
+          {{ s is not none
+             and s.state not in ['unknown', 'unavailable']
+             and (now() - s.last_reported).total_seconds() < window }}
+
+automation:
+  - id: ac_vent_compressor_not_cooling
+    alias: AC Vent Compressor Not Cooling
+    description: >
+      Fast supply-air check: alerts when the ecobee has commanded cooling for
+      the configured confirm window but the vent has not gone measurably colder
+      than the room. Supersedes the slow indoor-temperature check as the
+      primary compressor watchdog.
+    mode: single
+
+    # Template trigger (not state) because HA documents template support in
+    # `for:` only for template triggers, and the confirm window is a slider.
+    # Caveat: a `for:` countdown does not survive an HA restart or automation
+    # reload, so a restart mid-cooling-cycle restarts the clock.
+    trigger:
+      - platform: template
+        value_template: >-
+          {{ is_state('binary_sensor.ac_cooling_commanded', 'on')
+             and is_state('binary_sensor.ac_vent_sensor_healthy', 'on')
+             and states('sensor.ac_vent_delta') | float(99)
+                 < states('input_number.ac_vent_delta_threshold') | float(2) }}
+        for:
+          minutes: "{{ states('input_number.ac_vent_confirm_minutes') | int(10) }}"
+
+    condition:
+      # Re-verify at fire time; guards the race where the state flips during the
+      # `for` window, and refuses to act on a stale or missing reading.
+      - condition: state
+        entity_id: binary_sensor.ac_cooling_commanded
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.ac_vent_sensor_healthy
+        state: "on"
+      - condition: template
+        value_template: >-
+          {{ states('sensor.ac_vent_delta') not in ['unknown', 'unavailable'] }}
+
+    action:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.ac_vent_fault_active
+      - action: system_log.write
+        data:
+          level: warning
+          logger: tubtron.ac_vent_monitor
+          message: >-
+            AC VENT WATCHDOG: cooling commanded
+            {{ states('input_number.ac_vent_confirm_minutes') }} min but vent delta
+            is only {{ states('sensor.ac_vent_delta') }}F
+            (threshold {{ states('input_number.ac_vent_delta_threshold') }}F).
+            Vent {{ states('sensor.temperature_3') }}F,
+            indoor {{ state_attr('climate.my_ecobee', 'current_temperature') }}F.
+            Compressor likely not running.
+      - action: persistent_notification.create
+        data:
+          title: "AC not cooling (vent)"
+          notification_id: ac_vent_not_cooling
+          message: >-
+            The ecobee has called for cooling for
+            {{ states('input_number.ac_vent_confirm_minutes') }} minutes, but the
+            supply vent is only {{ states('sensor.ac_vent_delta') }}F cooler than
+            the room (needs {{ states('input_number.ac_vent_delta_threshold') }}F).
+
+            Vent {{ states('sensor.temperature_3') }}F,
+            indoor {{ state_attr('climate.my_ecobee', 'current_temperature') }}F,
+            setpoint {{ state_attr('climate.my_ecobee', 'temperature') }}F.
+
+            The air handler is moving air that is not being cooled -- check the
+            outdoor compressor, refrigerant charge, and for a frozen coil.
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "AC not cooling"
+          message: >-
+            Vent air is only {{ states('sensor.ac_vent_delta') }}F below room temp
+            after {{ states('input_number.ac_vent_confirm_minutes') }} min of
+            cooling. Check the outdoor compressor.
+
+  - id: ac_vent_cooling_recovered
+    alias: AC Vent Cooling Recovered
+    description: >
+      Clears the fault once the vent is properly cold again, so the alert
+      reflects current reality instead of latching until acknowledged.
+    mode: single
+
+    trigger:
+      - platform: template
+        value_template: >-
+          {{ states('sensor.ac_vent_delta') | float(-99)
+             >= states('input_number.ac_vent_delta_threshold') | float(2) }}
+        for:
+          minutes: 5
+
+    condition:
+      - condition: state
+        entity_id: input_boolean.ac_vent_fault_active
+        state: "on"
+
+    action:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.ac_vent_fault_active
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: ac_vent_not_cooling
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "AC cooling again"
+          message: >-
+            Vent air is back to {{ states('sensor.ac_vent_delta') }}F below room
+            temp. The earlier compressor alert has cleared.
+
+  - id: ac_vent_sensor_offline
+    alias: AC Vent Sensor Offline
+    description: >
+      The vent sensor is the primary compressor watchdog, so losing it is a
+      silent loss of coverage. Alerts if it stops reporting for longer than
+      ac_vent_stale_hours (dead battery, or dropped off the Zigbee mesh).
+    mode: single
+
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.ac_vent_sensor_healthy
+        to: "off"
+        for:
+          minutes: 30
+
+    action:
+      - action: system_log.write
+        data:
+          level: warning
+          logger: tubtron.ac_vent_monitor
+          message: >-
+            AC VENT SENSOR OFFLINE: sensor.temperature_3 has not reported in
+            {{ states('input_number.ac_vent_stale_hours') }}h. The vent compressor
+            watchdog is blind; only the slow indoor-temperature check in
+            ac_compressor_monitor.yaml remains.
+      - action: persistent_notification.create
+        data:
+          title: "AC vent sensor offline"
+          notification_id: ac_vent_sensor_offline
+          message: >-
+            The SNZB-02B vent sensor has not reported in
+            {{ states('input_number.ac_vent_stale_hours') }}h, so the primary AC
+            compressor watchdog is not running. Check its battery
+            ({{ states('sensor.temperature_3_battery') }}%) and its Zigbee link.
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "AC vent sensor offline"
+          message: >-
+            The vent temp sensor stopped reporting -- AC compressor monitoring is
+            degraded. Battery {{ states('sensor.temperature_3_battery') }}%.

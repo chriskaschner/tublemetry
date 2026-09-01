@@ -1,4 +1,19 @@
-# AC Compressor "commanded but not cooling" watchdog.
+# AC Compressor "commanded but not cooling" watchdog -- SLOW FALLBACK.
+#
+# DEMOTED 2026-08-31. ac_vent_monitor.yaml now owns primary detection using the
+# SNZB-02B supply-air sensor -- the duct probe this file's own notes below call
+# "the real fix". Supply air responds in ~1-2 min instead of 90, and does not
+# false-alarm on a hot afternoon.
+#
+# This package is kept, not deleted, because it is the only check that still
+# works if the Zigbee vent sensor dies or drops off the mesh. Its phone push was
+# removed so one failure does not page twice; it now writes a warning to the log
+# and raises a persistent (in-app) notification only. The vent package alerts
+# separately when the vent sensor itself goes silent, which is what makes this
+# demotion safe.
+#
+# It still defines binary_sensor.ac_cooling_commanded, which ac_vent_monitor.yaml
+# depends on. Do not delete this file without moving that sensor.
 #
 # Detects the failure the user cares about: the ecobee calls for cooling but the
 # space does not actually cool (compressor not running, low refrigerant, frozen
@@ -84,28 +99,22 @@ automation:
           level: warning
           logger: tubtron.ac_monitor
           message: >
-            AC WATCHDOG: cooling commanded >=20 min but indoor temp has not
-            dropped (start={{ states('sensor.ac_cooling_start_temp') }}F,
+            AC WATCHDOG (slow fallback): cooling commanded >=90 min but indoor
+            temp has not dropped (start={{ states('sensor.ac_cooling_start_temp') }}F,
             now={{ state_attr('climate.my_ecobee','current_temperature') }}F,
             setpoint={{ state_attr('climate.my_ecobee','temperature') }}F).
             Compressor may not be running -- check the outdoor unit.
       - action: persistent_notification.create
         data:
-          title: "AC not cooling"
+          title: "AC not cooling (slow indoor check)"
           notification_id: ac_not_cooling
           message: >
-            The ecobee has been calling for cooling for 20+ minutes but the
+            The ecobee has been calling for cooling for 90+ minutes but the
             indoor temperature has not dropped
             (start {{ states('sensor.ac_cooling_start_temp') }}F ->
             now {{ state_attr('climate.my_ecobee','current_temperature') }}F,
             setpoint {{ state_attr('climate.my_ecobee','temperature') }}F).
             Check the outdoor compressor.
-      - action: notify.mobile_app_chris_iphone
-        data:
-          title: "AC not cooling"
-          message: >
-            Cooling called 20+ min, indoor temp not dropping
-            ({{ states('sensor.ac_cooling_start_temp') }}F ->
-            {{ state_attr('climate.my_ecobee','current_temperature') }}F,
-            set {{ state_attr('climate.my_ecobee','temperature') }}F).
-            Check the compressor.
+
+            This is the SLOW fallback check. If ac_vent_monitor.yaml did not also
+            fire, suspect the vent sensor rather than the compressor.

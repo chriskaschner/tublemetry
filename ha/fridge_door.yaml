@@ -1,0 +1,144 @@
+# Outdoor fridge door-ajar alerting -- SONOFF SNZB-04PR2 via deCONZ
+#
+# binary_sensor.openclose_5, device_class 'opening': on = open, off = closed.
+#
+# Escalating by design (chosen 2026-08-31): an outdoor fridge in summer heat
+# loses its contents if a door is left ajar, and a single push is easy to miss
+# when you are already outside and away from your phone. So it nags every 5
+# minutes until the door is actually shut, then confirms the close.
+#
+# The nagging is capped at 12 reminders (~1 hour). Past that the message has
+# clearly not landed, and an uncapped loop would push forever on a sensor stuck
+# in the 'open' state -- which is exactly what a dead magnet or a failing reed
+# switch looks like.
+#
+# The open-duration threshold is a slider rather than a constant because loading
+# groceries legitimately holds the door open for a while, and the right value is
+# a matter of taste. Per the helpers.yaml note, no `initial:` is declared (it
+# would reset your tuning on every restart), so the slider comes up at its
+# minimum -- which is set to 3 so the unconfigured default is the intended one.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+input_number:
+  fridge_door_open_minutes:
+    name: "Fridge Door Open Minutes"
+    min: 3
+    max: 30
+    step: 1
+    unit_of_measurement: "min"
+    icon: mdi:fridge-alert
+
+input_boolean:
+  fridge_door_alerted:
+    name: "Fridge Door Alerted"
+    icon: mdi:fridge-alert-outline
+
+automation:
+  - id: fridge_door_left_open
+    alias: Fridge Door Left Open
+    description: >
+      Pushes once the outdoor fridge door has been open past the configured
+      threshold, then re-nags every 5 minutes until it is closed (capped at 12
+      reminders), and confirms when it finally shuts.
+    # restart: a close-then-reopen starts a fresh alert cycle rather than being
+    # swallowed by the previous run still sitting in its wait.
+    mode: restart
+
+    # A template trigger, not a state trigger, specifically because HA documents
+    # template support in `for:` for template triggers only. A state trigger with
+    # a templated `for:` is undocumented and might silently not honor the slider.
+    #
+    # Caveat inherited from `for:` generally: the countdown does NOT survive an HA
+    # restart or an automation reload. A restart while the door is already open
+    # restarts the clock, so a badly timed reboot can delay the first alert by up
+    # to the threshold. Acceptable here; the door still gets caught.
+    trigger:
+      - platform: template
+        value_template: "{{ is_state('binary_sensor.openclose_5', 'on') }}"
+        for:
+          minutes: "{{ states('input_number.fridge_door_open_minutes') | int(3) }}"
+
+    condition:
+      # Never act on a sensor that has dropped off the mesh -- 'unavailable' is
+      # not 'open'.
+      - condition: state
+        entity_id: binary_sensor.openclose_5
+        state: "on"
+
+    action:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.fridge_door_alerted
+
+      - repeat:
+          sequence:
+            - variables:
+                open_minutes: >-
+                  {{ (states('input_number.fridge_door_open_minutes') | int(3))
+                     + (repeat.index - 1) * 5 }}
+            - action: notify.mobile_app_chris_iphone
+              data:
+                title: "Outdoor fridge door open"
+                message: >-
+                  Open for about {{ open_minutes }} minutes.
+                  {%- if repeat.index > 1 %} Still not closed.{% endif %}
+                data:
+                  # Replace the previous reminder rather than stacking a new
+                  # banner for every nag.
+                  tag: fridge_door_open
+            # Sleep in 5-min slices, but wake immediately when the door closes so
+            # the loop exits promptly instead of running out a stale delay.
+            - wait_for_trigger:
+                - platform: state
+                  entity_id: binary_sensor.openclose_5
+                  to: "off"
+              timeout: "00:05:00"
+              continue_on_timeout: true
+          while:
+            - condition: state
+              entity_id: binary_sensor.openclose_5
+              state: "on"
+            - condition: template
+              value_template: "{{ repeat.index <= 12 }}"
+
+      - if:
+          - condition: state
+            entity_id: binary_sensor.openclose_5
+            state: "off"
+        then:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: fridge_door_open
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Outdoor fridge closed"
+              message: "The fridge door is shut again."
+              data:
+                tag: fridge_door_open
+        else:
+          # Still open after ~1 hour of reminders. Stop pushing, but leave a
+          # persistent notification so the condition is not simply forgotten.
+          - action: system_log.write
+            data:
+              level: warning
+              logger: tubtron.fridge_door
+              message: >-
+                FRIDGE DOOR: open for over an hour after 12 reminders. Either it
+                is genuinely open or binary_sensor.openclose_5 is stuck 'on'.
+          - action: persistent_notification.create
+            data:
+              title: "Outdoor fridge still open"
+              notification_id: fridge_door_open
+              message: >-
+                The outdoor fridge door has read open for over an hour and 12
+                reminders. No further push reminders will be sent for this
+                episode.
+
+                If the door is actually shut, the sensor may be stuck -- check the
+                magnet alignment and its battery
+                ({{ states('sensor.openclose_5_battery') }}%).
+
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.fridge_door_alerted

@@ -1,0 +1,277 @@
+# Hot Tub physical button control (SONOFF SNZB-01P via deCONZ)
+#
+# One physical button, three gestures, captured live from the device on
+# 2026-08-31 with scripts/capture_button_events.py (2 clean passes, no stray or
+# precursor events, so no debounce logic is needed):
+#
+#   deconz_event id=roundbutton event=1002  single press  -> Max setpoint
+#   deconz_event id=roundbutton event=1004  double press  -> Coast setpoint
+#   deconz_event id=roundbutton event=1003  long press    -> resume TOU schedule
+#
+# NOTE 1003 is "long RELEASE". The device never emitted 1001 ("hold"), so a long
+# press fires exactly once, on release -- no repeat-while-held to defend against.
+#
+# WHY AN OVERRIDE FLAG EXISTS
+# ---------------------------
+# The setpoint is owned by the self-healing TOU schedule (tou_automation.yaml),
+# which re-applies sensor.hot_tub_expected_setpoint on boundary changes, HA
+# start, and ESP32 reconnect. A naive number.set_value from a button press would
+# therefore be silently reverted the next time the ESP32 reconnects -- and the
+# tub's WiFi sits around -81 dBm, so that is a routine event, not a rare one.
+# tou_watchdog.yaml would also push a false "TOU NOT WORKING" alert 15 minutes
+# into any deliberate override.
+#
+# So a press raises input_boolean.hot_tub_manual_override, which:
+#   - tou_automation.yaml honors (it will not re-apply the schedule while the
+#     override is up, EXCEPT at a real boundary or after a thermal-runaway
+#     clear, where safety and the schedule win)
+#   - tou_watchdog.yaml honors (setpoint_stuck is suppressed while overridden,
+#     so a deliberate override never pages you)
+#
+# The override EXPIRES at the next TOU boundary (see the expiry automation
+# below), which is the behavior chosen 2026-08-31: a press gets you what you
+# want now, but nighttime coasting is never permanently lost to a forgotten
+# press.
+#
+# drift_detection.yaml is deliberately NOT suppressed. It compares the PANEL
+# against the COMMANDED value, which must agree regardless of who commanded it,
+# so it stays a valid failure signal during an override.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+input_boolean:
+  hot_tub_manual_override:
+    name: "Hot Tub Manual Override"
+    icon: mdi:gesture-tap-button
+
+script:
+  hot_tub_apply_setpoint:
+    alias: "Hot Tub Apply Setpoint"
+    icon: mdi:thermometer-check
+    # restart: a second press supersedes an in-flight one rather than queueing
+    # behind its verification wait.
+    mode: restart
+    fields:
+      target:
+        name: Target
+        description: "Setpoint to apply, degrees F"
+        required: true
+        selector:
+          number:
+            min: 80
+            max: 104
+      label:
+        name: Label
+        description: "Human name for the notification, e.g. Max / Coast"
+        required: true
+        selector:
+          text:
+      set_override:
+        name: Set override
+        description: "Raise the manual-override flag (false = resuming schedule)"
+        default: true
+        selector:
+          boolean:
+    sequence:
+      - variables:
+          target_i: "{{ target | int }}"
+          override: "{{ set_override | default(true) }}"
+
+      # Refuse (loudly) rather than silently doing nothing. A physical button
+      # with no feedback of its own must always produce a push, or a press that
+      # was blocked is indistinguishable from a press that never registered.
+      - choose:
+          - conditions: "{{ is_state('input_boolean.thermal_runaway_active', 'on') }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Hot tub: press ignored"
+                  message: >-
+                    Thermal runaway protection is active, so setpoint changes are
+                    blocked. Did not apply {{ label }} ({{ target_i }}F).
+              - stop: "thermal runaway active"
+
+          - conditions: "{{ not is_state('binary_sensor.tublemetry_hot_tub_api_status', 'on') }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Hot tub: press ignored"
+                  message: >-
+                    The tub controller is offline, so {{ label }} ({{ target_i }}F)
+                    could not be applied. Check the ESP32.
+              - stop: "esp32 offline"
+
+          # Guards a slider left at an absurd value, and the firmware clamp
+          # (button_injector.h TEMP_FLOOR / TEMP_CEILING).
+          - conditions: "{{ target_i < 80 or target_i > 104 }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Hot tub: press ignored"
+                  message: >-
+                    {{ label }} resolved to {{ target_i }}F, outside the safe range
+                    80-104F. Check the seasonal sliders.
+              - stop: "target out of range"
+
+      - if: "{{ override }}"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.hot_tub_manual_override
+        else:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.hot_tub_manual_override
+
+      - action: number.set_value
+        target:
+          entity_id: number.tublemetry_hot_tub_setpoint
+        data:
+          value: "{{ target_i }}"
+
+      # Report reality, not intent. Injection is a physical button-press
+      # sequence against the spa panel that takes ~6-20s and can fail (see the
+      # open undershoot bug), so an immediate "done!" push would sometimes lie.
+      # This template is already true when the panel is where you asked, so a
+      # redundant press still notifies promptly instead of waiting out the
+      # timeout.
+      - wait_template: >-
+          {{ is_state('sensor.tublemetry_hot_tub_injection_phase', 'idle')
+             and states('sensor.tublemetry_hot_tub_detected_setpoint') | int(-1) == target_i }}
+        timeout: "00:02:00"
+        continue_on_timeout: true
+
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: >-
+            {% if wait.completed %}Hot tub -> {{ label }} {{ target_i }}F
+            {%- else %}Hot tub may not have reached {{ target_i }}F{% endif %}
+          message: >-
+            {% set water = states('sensor.tublemetry_hot_tub_temperature') %}
+            {% set panel = states('sensor.tublemetry_hot_tub_detected_setpoint') %}
+            {% if wait.completed %}
+              Setpoint is {{ target_i }}F ({{ label }}). Water {{ water }}F.
+              {% if override %}Override holds until the next schedule change.
+              {%- else %}Following the TOU schedule again.{% endif %}
+            {% else %}
+              Commanded {{ target_i }}F but the panel still reads {{ panel }}F after
+              2 min (injection {{ states('sensor.tublemetry_hot_tub_injection_phase') }},
+              retries {{ states('sensor.tublemetry_hot_tub_retry_count') }},
+              last result {{ states('sensor.tublemetry_hot_tub_last_command_result') }}).
+              Check the panel.
+            {% endif %}
+
+automation:
+  - id: hot_tub_button_control
+    alias: Hot Tub Button Control
+    description: >
+      SNZB-01P round button: single press -> Max setpoint, double press -> Coast
+      setpoint, long press -> cancel the override and resume the TOU schedule.
+      Event codes captured from the live device, not assumed.
+    # queued: a fast single-then-double should apply both in order rather than
+    # dropping the second press on the floor.
+    mode: queued
+    max: 5
+
+    trigger:
+      - platform: event
+        event_type: deconz_event
+        event_data:
+          id: roundbutton
+          event: 1002
+        id: single_press
+      - platform: event
+        event_type: deconz_event
+        event_data:
+          id: roundbutton
+          event: 1004
+        id: double_press
+      - platform: event
+        event_type: deconz_event
+        event_data:
+          id: roundbutton
+          event: 1003
+        id: long_press
+
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: single_press
+            sequence:
+              - action: script.hot_tub_apply_setpoint
+                data:
+                  target: "{{ states('input_number.hot_tub_max_setpoint') | int(102) }}"
+                  label: "Max"
+                  set_override: true
+
+          - conditions:
+              - condition: trigger
+                id: double_press
+            sequence:
+              - action: script.hot_tub_apply_setpoint
+                data:
+                  target: "{{ states('input_number.hot_tub_coast_setpoint') | int(90) }}"
+                  label: "Coast"
+                  set_override: true
+
+          # Long press = escape hatch. Drops the override and snaps back to
+          # whatever the schedule wants right now. An accidental long press is
+          # harmless by design: it only restores scheduled behavior.
+          - conditions:
+              - condition: trigger
+                id: long_press
+            sequence:
+              - action: script.hot_tub_apply_setpoint
+                data:
+                  target: "{{ states('sensor.hot_tub_expected_setpoint') | int(102) }}"
+                  label: "Schedule"
+                  set_override: false
+
+  - id: hot_tub_override_expiry
+    alias: Hot Tub Override Expiry
+    description: >
+      Expires the manual override at the next TOU boundary (when the expected
+      setpoint changes) or immediately if thermal runaway trips. Clearing the
+      flag is enough -- tou_automation.yaml applies the boundary value on the
+      same trigger, and is allowed through regardless of the override.
+    mode: single
+
+    trigger:
+      # A real boundary. not_from/not_to keep HA-start 'unknown' -> value
+      # transitions from counting as a boundary and silently eating an override.
+      - platform: state
+        entity_id: sensor.hot_tub_expected_setpoint
+        not_from:
+          - unknown
+          - unavailable
+        not_to:
+          - unknown
+          - unavailable
+        id: boundary
+      - platform: state
+        entity_id: input_boolean.thermal_runaway_active
+        to: "on"
+        id: runaway
+
+    condition:
+      - condition: state
+        entity_id: input_boolean.hot_tub_manual_override
+        state: "on"
+
+    action:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.hot_tub_manual_override
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "Hot tub override ended"
+          message: >-
+            {% if trigger.id == 'runaway' %}
+              Thermal runaway protection tripped, so your manual setpoint override
+              was cancelled. Safety limits are in control.
+            {% else %}
+              Schedule boundary reached -- your manual override ended and the tub is
+              back on the TOU schedule at
+              {{ states('sensor.hot_tub_expected_setpoint') }}F.
+            {% endif %}
