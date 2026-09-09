@@ -61,3 +61,6 @@ vendor/
 coverage/
 .cache/
 tmp/
+
+# Local measurement artifacts from scripts/watch_deconz_health.py
+docs/ha-migration/deconz-health.jsonl

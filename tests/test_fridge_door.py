@@ -50,25 +50,44 @@ def test_threshold_is_a_slider_with_safe_default(pkg):
 # --- trigger ---
 
 
-def test_triggers_on_door_open_for_threshold(auto):
+def test_triggers_only_on_a_real_open_edge(auto):
+    """REGRESSION (2026-09-09): the deCONZ gateway drops out ~9x/day and each
+    reconnect repopulated this entity as 'on', which the old "state is 'on' for
+    N minutes" trigger could not distinguish from a door left ajar -- roughly 9
+    false pushes a day. Demanding an 'off' -> 'on' edge excludes
+    'unavailable' -> 'on'. Do not relax `from` without re-reading the header."""
     trig = auto["trigger"][0]
-    assert DOOR_SENSOR in trig["value_template"]
-    assert "fridge_door_open_minutes" in str(trig["for"]["minutes"])
+    assert trig["platform"] == "state"
+    assert trig["entity_id"] == DOOR_SENSOR
+    assert trig["from"] == "off"
+    assert trig["to"] == "on"
 
 
-def test_uses_template_trigger_for_templated_for(auto):
-    """HA documents template support in `for:` for TEMPLATE triggers only. A
-    state trigger with a templated `for:` is undocumented and may silently
-    ignore the slider, so the threshold would quietly stop being tunable."""
-    assert auto["trigger"][0]["platform"] == "template"
+def test_threshold_is_still_tunable_by_the_slider(auto):
+    """The threshold moved out of the trigger `for:` and into the first
+    wait_for_trigger `timeout`. It must still read the slider, in seconds."""
+    wait = auto["action"][0]
+    assert "wait_for_trigger" in wait
+    assert "fridge_door_open_minutes" in wait["timeout"]
+    assert "* 60" in wait["timeout"], "timeout is in seconds, so minutes must be scaled"
+    assert wait["continue_on_timeout"] is True
+
+
+def test_closing_inside_the_threshold_sends_nothing(auto):
+    """A normal grab from the fridge completes the wait, so wait.trigger is set.
+    Only a timeout (wait.trigger is none) means the door is still open."""
+    gate = next(
+        s for s in auto["action"] if str(s.get("value_template", "")).count("wait.trigger")
+    )
+    assert "is none" in gate["value_template"]
 
 
 def test_ignores_unavailable_sensor(auto):
-    """'unavailable' is not 'open' -- a sensor that dropped off the mesh must
-    not be reported as a door left ajar."""
-    conds = auto["condition"]
+    """'unavailable' is not 'open' -- a sensor that dropped off the mesh mid-wait
+    must not be reported as a door left ajar."""
     assert any(
-        c.get("entity_id") == DOOR_SENSOR and c.get("state") == "on" for c in conds
+        s.get("entity_id") == DOOR_SENSOR and s.get("state") == "on"
+        for s in auto["action"]
     )
 
 
@@ -135,3 +154,79 @@ def test_gives_up_loudly_not_silently(auto):
     actions = [s.get("action") for s in branch["else"]]
     assert "persistent_notification.create" in actions
     assert "system_log.write" in actions
+
+
+# --- stuck-sensor watchdog (covers the gap the 'off' -> 'on' gate opens) ---
+
+
+@pytest.fixture
+def stuck(pkg):
+    return next(
+        a for a in pkg["automation"] if a["id"] == "fridge_door_sensor_stuck_open"
+    )
+
+
+def test_watchdog_covers_the_untrusted_transition(stuck):
+    """The gate deliberately drops 'unavailable' -> 'on'. That is exactly what
+    this watches, so a door opened during a dropout is not invisible."""
+    trig = stuck["trigger"][0]
+    assert trig["from"] == "unavailable"
+    assert trig["to"] == "on"
+    assert trig["for"]["minutes"] == 60
+
+
+def test_watchdog_never_pushes(stuck):
+    """Pushing here would reinstate the false alerts on a 60-minute lag, which
+    is the entire thing the gate exists to stop."""
+    actions = [s.get("action", "") for s in stuck["action"]]
+    assert not any(a.startswith("notify.") for a in actions)
+    assert "persistent_notification.create" in actions
+    assert "system_log.write" in actions
+
+
+def test_watchdog_notice_is_cleared_on_a_real_close(pkg):
+    """Otherwise a stale 'reads open' banner outlives the fault."""
+    clear = next(
+        a for a in pkg["automation"] if a["id"] == "fridge_door_stuck_cleared"
+    )
+    assert clear["trigger"][0]["to"] == "off"
+    assert clear["action"][0]["action"] == "persistent_notification.dismiss"
+
+    stuck_auto = next(
+        a for a in pkg["automation"] if a["id"] == "fridge_door_sensor_stuck_open"
+    )
+    created = next(
+        s for s in stuck_auto["action"]
+        if s.get("action") == "persistent_notification.create"
+    )
+    assert clear["action"][0]["data"]["notification_id"] == created["data"]["notification_id"]
+
+
+def _walk(node):
+    """Yield every action step, including ones nested in if/then/else, repeat,
+    and choose. The give-up notification lives inside an if/else branch."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _walk(item)
+    elif isinstance(node, dict):
+        yield node
+        for key in ("then", "else", "sequence", "default"):
+            if key in node:
+                yield from _walk(node[key])
+        if "repeat" in node:
+            yield from _walk(node["repeat"].get("sequence", []))
+        if "choose" in node:
+            for option in node["choose"]:
+                yield from _walk(option.get("sequence", []))
+
+
+def test_watchdog_notice_is_distinct_from_the_alert_notice(pkg):
+    """Sharing an id would let the give-up branch and the watchdog silently
+    overwrite each other's notification."""
+    ids = {
+        s["data"]["notification_id"]
+        for a in pkg["automation"]
+        for s in _walk(a["action"])
+        if s.get("action") == "persistent_notification.create"
+    }
+    assert ids == {"fridge_door_open", "fridge_door_stuck"}, f"got {ids}"

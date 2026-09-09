@@ -18,6 +18,34 @@
 # would reset your tuning on every restart), so the slider comes up at its
 # minimum -- which is set to 3 so the unconfigured default is the intended one.
 #
+# ONLY 'off' -> 'on' IS TRUSTED -- ADDED 2026-09-09 AFTER FALSE ALERTS
+# --------------------------------------------------------------------
+# The original trigger fired on "state is 'on' for N minutes" regardless of what
+# preceded the 'on'. That paged the phone roughly 9 times a day, because:
+#
+#   - The deCONZ gateway drops out ~9x/day (measured 34.6% of a 72h window).
+#     Both deCONZ devices go unavailable at byte-identical timestamps while a
+#     non-deCONZ ESPHome entity stays up at 1.5%, so this is the gateway, not
+#     this sensor's radio link and not the magnet.
+#   - Since 09-08 17:23 every reconnect repopulated this entity as 'on'. The
+#     phantom 'on' then persisted for 35-148 min -- never self-correcting, only
+#     ending at the next dropout -- which is far past the 3-minute threshold.
+#   - 7 of the last 8 alert-length OPEN episodes were 'unavailable' -> 'on'.
+#     Real openings in the same window were 3-8 SECONDS long.
+#
+# So the trigger now demands an 'off' -> 'on' edge. A repopulated 'on' after a
+# dropout is arriving from 'unavailable' and is ignored.
+#
+# KNOWN GAP, ACCEPTED: a door genuinely opened while deCONZ is disconnected
+# comes back as 'unavailable' -> 'on' and will NOT page. That is deliberate --
+# there is no way to tell it apart from the phantom, and at 9 false pages a day
+# the alert was being ignored anyway, which is worse. The gap closes on its own
+# once the gateway is fixed; until then the stuck-sensor watchdog below leaves a
+# silent persistent notification so a long 'on' is still visible without pushing.
+# Re-evaluate this gate once deCONZ dropouts are resolved.
+#
+# Diagnose with: uv run scripts/diagnose_fridge_door.py
+#
 # NO TAMPER ALERT -- INVESTIGATED 2026-08-31, BLOCKED ON deCONZ
 # -------------------------------------------------------------
 # The SNZB-04PR2 hardware HAS a tamper switch, but it is unreachable from HA
@@ -74,28 +102,50 @@ automation:
     # swallowed by the previous run still sitting in its wait.
     mode: restart
 
-    # A template trigger, not a state trigger, specifically because HA documents
-    # template support in `for:` for template triggers only. A state trigger with
-    # a templated `for:` is undocumented and might silently not honor the slider.
+    # Fires on the door-opening EDGE only. `from: "off"` is the whole fix: it
+    # excludes 'unavailable' -> 'on', which is what a gateway reconnect looks
+    # like. See the header for the measurements behind this.
     #
-    # Caveat inherited from `for:` generally: the countdown does NOT survive an HA
-    # restart or an automation reload. A restart while the door is already open
-    # restarts the clock, so a badly timed reboot can delay the first alert by up
-    # to the threshold. Acceptable here; the door still gets caught.
+    # The threshold moved out of a trigger `for:` and into the wait_for_trigger
+    # below. That drops the previous "template trigger, because `for:` templating
+    # is only documented for template triggers" constraint entirely -- a
+    # templated wait_for_trigger `timeout` is supported and documented -- while
+    # keeping the slider honored.
+    #
+    # Caveat unchanged: the countdown does NOT survive an HA restart or an
+    # automation reload, since the run is simply killed mid-wait. A restart while
+    # the door is already open loses that episode's alert rather than delaying it
+    # (there is no new 'off' -> 'on' edge to re-arm on). Accepted: restarts are
+    # rare compared to the 9 false pages a day this removes.
     trigger:
-      - platform: template
-        value_template: "{{ is_state('binary_sensor.openclose_5', 'on') }}"
-        for:
-          minutes: "{{ states('input_number.fridge_door_open_minutes') | int(3) }}"
+      - platform: state
+        entity_id: binary_sensor.openclose_5
+        from: "off"
+        to: "on"
 
-    condition:
-      # Never act on a sensor that has dropped off the mesh -- 'unavailable' is
-      # not 'open'.
+    action:
+      # Hold for the threshold, but wake immediately if the door shuts. A closed
+      # door leaves wait.trigger set; a timeout leaves it none and means the door
+      # is still open.
+      - wait_for_trigger:
+          - platform: state
+            entity_id: binary_sensor.openclose_5
+            to: "off"
+        timeout: >-
+          {{ (states('input_number.fridge_door_open_minutes') | int(3)) * 60 }}
+        continue_on_timeout: true
+
+      # Closed inside the threshold -- a normal grab from the fridge. Stop here
+      # so no alert, and therefore no "closed again" confirmation either.
+      - condition: template
+        value_template: "{{ wait.trigger is none }}"
+
+      # Never act on a sensor that dropped off the mesh mid-wait -- 'unavailable'
+      # is not 'open'.
       - condition: state
         entity_id: binary_sensor.openclose_5
         state: "on"
 
-    action:
       - action: input_boolean.turn_on
         target:
           entity_id: input_boolean.fridge_door_alerted
@@ -171,3 +221,61 @@ automation:
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.fridge_door_alerted
+
+  # Covers the gap the 'off' -> 'on' gate deliberately opens. Deliberately does
+  # NOT push: the whole point of the gate is that this transition is untrusted,
+  # and pushing on it would just reinstate the false alerts on a 60-minute lag.
+  # A persistent notification keeps a genuinely-open door visible in the UI, and
+  # the log line is the counter to watch while chasing the deCONZ dropouts --
+  # every firing here is one gateway reconnect that repopulated the door as open.
+  - id: fridge_door_sensor_stuck_open
+    alias: Fridge Door Sensor Stuck Open
+    description: >
+      Silent watchdog. The door sensor came back from a gateway dropout reading
+      'open' and has stayed that way for an hour, which is either a phantom
+      state or a door that was opened while deCONZ was disconnected.
+    mode: single
+
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.openclose_5
+        from: "unavailable"
+        to: "on"
+        for:
+          minutes: 60
+
+    action:
+      - action: system_log.write
+        data:
+          level: warning
+          logger: tubtron.fridge_door
+          message: >-
+            FRIDGE DOOR: binary_sensor.openclose_5 returned from a gateway
+            dropout as 'on' and held for 60 min. No push sent (untrusted
+            transition). Run scripts/diagnose_fridge_door.py.
+      - action: persistent_notification.create
+        data:
+          title: "Outdoor fridge reads open (unverified)"
+          notification_id: fridge_door_stuck
+          message: >-
+            binary_sensor.openclose_5 came back from a deCONZ dropout reading
+            open and has held for an hour. No push was sent because a
+            'unavailable' -> 'on' transition is not trusted.
+
+            If the door is actually shut, this is the known deCONZ gateway fault
+            and can be ignored. If it is actually open, the gate cost you an
+            alert -- go check.
+
+  # Clears the watchdog notice as soon as the sensor reports a real close, so a
+  # stale "reads open" banner does not linger after the gateway sorts itself out.
+  - id: fridge_door_stuck_cleared
+    alias: Fridge Door Stuck Notice Cleared
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.openclose_5
+        to: "off"
+    action:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: fridge_door_stuck
