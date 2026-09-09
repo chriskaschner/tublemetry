@@ -136,14 +136,60 @@ def test_sensor_health_uses_last_reported(pkg):
     assert VENT_SENSOR.split(".")[1] in health["state"]
 
 
+def _offline_branches(pkg):
+    """Return (gateway_up_sequence, gateway_down_sequence) for the offline alert."""
+    offline = _auto(pkg, "ac_vent_sensor_offline")
+    choose = next(s for s in offline["action"] if "choose" in s)
+    return choose["choose"][0]["sequence"], choose["default"]
+
+
 def test_dead_vent_sensor_alerts(pkg):
     """Primary watchdog going blind must not be silent."""
     offline = _auto(pkg, "ac_vent_sensor_offline")
     trig = offline["trigger"][0]
     assert trig["entity_id"] == "binary_sensor.ac_vent_sensor_healthy"
     assert trig["to"] == "off"
-    actions = [s.get("action") for s in offline["action"]]
+    up_branch, _ = _offline_branches(pkg)
+    actions = [s.get("action") for s in up_branch]
     assert "notify.mobile_app_chris_iphone" in actions
+
+
+def test_offline_alert_is_gated_on_gateway_health(pkg):
+    """REGRESSION (2026-09-09): ac_vent_sensor_healthy goes off both on the
+    stale-hours window AND on the sensor reading 'unavailable'. The second fires
+    on every deCONZ gateway freeze, and 58 of 80 freezes over 10 days outlasted
+    the 30-minute `for:` -- about 5.8 false pushes a day. The push branch must
+    require the gateway to be UP, so it only fires for a genuinely dead device."""
+    up_branch, _ = _offline_branches(pkg)
+    offline = _auto(pkg, "ac_vent_sensor_offline")
+    choose = next(s for s in offline["action"] if "choose" in s)
+    conds = choose["choose"][0]["conditions"]
+    assert any(
+        c.get("entity_id") == "binary_sensor.deconz_gateway_up" and c.get("state") == "on"
+        for c in conds
+    ), "push branch is not gated on gateway health"
+    assert any(s.get("action") == "notify.mobile_app_chris_iphone" for s in up_branch)
+
+
+def test_gateway_freeze_branch_is_silent(pkg):
+    """deconz_freeze_watchdog already owns the gateway case and pushes if its
+    restart fails, so pushing here too would page twice for one fault."""
+    _, down_branch = _offline_branches(pkg)
+    actions = [s.get("action", "") for s in down_branch]
+    assert not any(a.startswith("notify.") for a in actions), "gateway branch pushes"
+    assert "system_log.write" in actions, "gateway branch is completely silent"
+
+
+def test_offline_message_reports_real_silence_not_the_threshold(pkg):
+    """The old text asserted 'has not reported in 3h' during a 30-minute freeze
+    and told you to check a battery sitting at 100%."""
+    offline = _auto(pkg, "ac_vent_sensor_offline")
+    var_step = next(s for s in offline["action"] if "variables" in s)
+    assert "last_reported" in var_step["variables"]["silent_minutes"]
+    up_branch, _ = _offline_branches(pkg)
+    push = next(s for s in up_branch if s.get("action") == "notify.mobile_app_chris_iphone")
+    assert "silent_minutes" in push["data"]["message"]
+    assert "ac_vent_stale_hours" not in push["data"]["message"]
 
 
 def test_recovery_clears_the_fault(pkg):

@@ -253,9 +253,26 @@ automation:
     alias: AC Vent Sensor Offline
     description: >
       The vent sensor is the primary compressor watchdog, so losing it is a
-      silent loss of coverage. Alerts if it stops reporting for longer than
-      ac_vent_stale_hours (dead battery, or dropped off the Zigbee mesh).
+      silent loss of coverage. Pushes only when THIS sensor died while the deCONZ
+      gateway was healthy; a gateway freeze is logged and left to the watchdog.
     mode: single
+
+    # ONLY PAGES FOR A REAL SENSOR FAILURE -- CHANGED 2026-09-09
+    # ----------------------------------------------------------
+    # `binary_sensor.ac_vent_sensor_healthy` goes off on TWO conditions: the
+    # ac_vent_stale_hours window, and `state not in ['unknown','unavailable']`.
+    # The second one fires the instant HA marks the sensor unavailable -- which
+    # happens on every deCONZ gateway freeze, regardless of the 3h window.
+    #
+    # The gateway freezes ~8x/day for a median 53 min (see ha/deconz_watchdog.yaml).
+    # 58 of 80 freezes over 10 days exceeded the 30-minute `for:` below, so this
+    # was pushing ~5.8 times a day about a sensor whose battery reads 100% and
+    # which is not broken. That is how an alert gets learned-ignored.
+    #
+    # So the two causes are now split. Gateway down -> log only, because
+    # deconz_freeze_watchdog already owns that case and alerts if its restart
+    # fails. This sensor specifically dead while the gateway is fine -> page,
+    # because that is a real dead battery or a device off the mesh.
 
     trigger:
       - platform: state
@@ -265,27 +282,60 @@ automation:
           minutes: 30
 
     action:
-      - action: system_log.write
-        data:
-          level: warning
-          logger: tubtron.ac_vent_monitor
-          message: >-
-            AC VENT SENSOR OFFLINE: sensor.temperature_3 has not reported in
-            {{ states('input_number.ac_vent_stale_hours') }}h. The vent compressor
-            watchdog is blind; only the slow indoor-temperature check in
-            ac_compressor_monitor.yaml remains.
-      - action: persistent_notification.create
-        data:
-          title: "AC vent sensor offline"
-          notification_id: ac_vent_sensor_offline
-          message: >-
-            The SNZB-02B vent sensor has not reported in
-            {{ states('input_number.ac_vent_stale_hours') }}h, so the primary AC
-            compressor watchdog is not running. Check its battery
-            ({{ states('sensor.temperature_3_battery') }}%) and its Zigbee link.
-      - action: notify.mobile_app_chris_iphone
-        data:
-          title: "AC vent sensor offline"
-          message: >-
-            The vent temp sensor stopped reporting -- AC compressor monitoring is
-            degraded. Battery {{ states('sensor.temperature_3_battery') }}%.
+      # Report the real silence, not the configured threshold. The old text
+      # asserted "has not reported in 3h" even when the true cause was a 30-min
+      # freeze, and told you to check a battery that was at 100%.
+      - variables:
+          silent_minutes: >-
+            {% set s = states.sensor.temperature_3 %}
+            {{ ((now() - s.last_reported).total_seconds() / 60) | round
+               if s is not none else 'an unknown number of' }}
+
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.deconz_gateway_up
+                state: "on"
+            sequence:
+              - action: system_log.write
+                data:
+                  level: warning
+                  logger: tubtron.ac_vent_monitor
+                  message: >-
+                    AC VENT SENSOR OFFLINE: sensor.temperature_3 silent for
+                    {{ silent_minutes }} min while the deCONZ gateway is UP, so
+                    this is the device itself. The vent compressor watchdog is
+                    blind; only the slow indoor-temperature check in
+                    ac_compressor_monitor.yaml remains.
+              - action: persistent_notification.create
+                data:
+                  title: "AC vent sensor offline"
+                  notification_id: ac_vent_sensor_offline
+                  message: >-
+                    The SNZB-02B vent sensor has been silent for
+                    {{ silent_minutes }} min while the rest of the Zigbee gateway
+                    is working, so this is the device and not the gateway. The
+                    primary AC compressor watchdog is not running. Check its
+                    battery ({{ states('sensor.temperature_3_battery') }}%) and
+                    its Zigbee link.
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "AC vent sensor offline"
+                  message: >-
+                    The vent temp sensor stopped reporting for
+                    {{ silent_minutes }} min -- AC compressor monitoring is
+                    degraded. Battery
+                    {{ states('sensor.temperature_3_battery') }}%.
+
+        # Gateway is down: every deCONZ entity is unavailable, not just this one.
+        # deconz_freeze_watchdog is restarting the add-on and will push if that
+        # fails, so pushing here too would page twice for one fault.
+        default:
+          - action: system_log.write
+            data:
+              level: warning
+              logger: tubtron.ac_vent_monitor
+              message: >-
+                AC vent sensor unavailable for {{ silent_minutes }} min, but the
+                deCONZ gateway is DOWN -- this is the gateway freeze, not the
+                sensor. No push sent; deconz_freeze_watchdog owns it.

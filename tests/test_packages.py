@@ -28,6 +28,7 @@ AUTOMATION_FILES = [
     "hot_tub_button.yaml",
     "ac_vent_monitor.yaml",
     "fridge_door.yaml",
+    "deconz_watchdog.yaml",
 ]
 
 # Files that are intentionally comment-only (deprecated / superseded).
