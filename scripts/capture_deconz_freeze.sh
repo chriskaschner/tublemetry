@@ -4,9 +4,24 @@
 # RUN THIS ON THE HA HOST, not on your laptop -- the deCONZ add-on's ports are
 # not exposed to the LAN, so this has to happen inside the container.
 #
-#   1. Install the "Advanced SSH & Web Terminal" add-on
-#   2. Turn Protection mode OFF (required for docker access)
-#   3. Paste this script in, or scp it over, then:  bash capture_deconz_freeze.sh
+#   1. Settings > Apps > "Install app" (blue button, BOTTOM RIGHT) > search
+#      "Advanced SSH & Web Terminal" > install.
+#      NOTE on the UI, confirmed on HA 2026.8.3: "Add-ons" is renamed "Apps"
+#      (puzzle-piece icon, "Run extra applications next to Home Assistant"), and
+#      the "Add-on Store" is now the "Install app" button. The Apps screen itself
+#      lists only what is ALREADY installed, which is why the store looks missing.
+#      Pick Advanced SSH specifically -- it ships the docker CLI and tmux, which
+#      the plain "Terminal & SSH" add-on may not.
+#   2. In its Configuration tab, turn Protection mode OFF. Required for docker
+#      access; without it the container is invisible and this script exits with
+#      a message saying so.
+#   3. Open the Terminal, then run it under tmux so closing the browser tab does
+#      not kill a run that may be waiting an hour for a freeze:
+#
+#        tmux new -s deconz
+#        bash capture_deconz_freeze.sh
+#
+#      Detach with Ctrl-B then D. Reattach later with: tmux attach -t deconz
 #
 # WHY: as of 2026-09-09 the deCONZ add-on hangs 20-110 min at a time, ~8x/day.
 # sensor.deconz_cpu_percent proved it goes QUIET while hung (0.35% frozen vs
