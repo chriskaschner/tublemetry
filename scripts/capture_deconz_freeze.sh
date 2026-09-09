@@ -37,9 +37,18 @@
 
 set -uo pipefail
 
-CONTAINER="addon_core_deconz"
 POLL=30
 OUT="/tmp/deconz-freeze-$(date +%Y%m%d-%H%M%S).txt"
+
+# Container naming follows the Add-ons -> Apps rename: HA 2026.8.3 names these
+# `app_core_deconz`, older versions `addon_core_deconz`. Detect rather than
+# hardcode -- guessing wrong looks exactly like Protection mode being on.
+# Override with DECONZ_CONTAINER=<name> if the pattern ever changes again.
+CONTAINER="${DECONZ_CONTAINER:-}"
+if [ -z "$CONTAINER" ]; then
+  CONTAINER=$(docker ps --format '{{.Names}}' 2>/dev/null \
+              | grep -E '^(app|addon)_core_deconz$' | head -1)
+fi
 
 # In-container exec. deCONZ's image ships curl and lsof; /proc works regardless
 # of whether procps is installed, so everything below falls back to /proc.
@@ -47,13 +56,23 @@ dex() { docker exec "$CONTAINER" sh -c "$1" 2>&1; }
 
 log() { echo "$*" | tee -a "$OUT"; }
 
-if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
-  echo "ERROR: container $CONTAINER not found."
-  echo "Is Protection mode still ON for the SSH add-on? It must be OFF."
+if [ -z "$CONTAINER" ] || ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
+  echo "ERROR: could not find the deCONZ container."
+  if docker ps >/dev/null 2>&1; then
+    echo "Docker IS reachable, so Protection mode is off -- the container just"
+    echo "does not match app_core_deconz / addon_core_deconz. Pick it from below"
+    echo "and re-run with:  DECONZ_CONTAINER=<name> bash \$0"
+  else
+    echo "Docker is NOT reachable. Turn Protection mode OFF for the SSH app"
+    echo "(Settings > Apps > Advanced SSH & Web Terminal > Configuration),"
+    echo "then restart that app."
+  fi
   echo "Containers present:"
   docker ps --format '  {{.Names}}' 2>/dev/null || echo "  (docker unavailable)"
   exit 1
 fi
+
+echo "using container: $CONTAINER"
 
 echo "watching $CONTAINER for a freeze; polling every ${POLL}s"
 echo "writing to $OUT"
