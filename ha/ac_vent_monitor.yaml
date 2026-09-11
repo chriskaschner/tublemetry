@@ -1,4 +1,18 @@
-# AC supply-air (vent) compressor watchdog -- SONOFF SNZB-02B via deCONZ
+# AC supply-air (vent) compressor watchdog -- SONOFF SNZB-02B via ZHA
+#
+# MIGRATED FROM deCONZ TO ZHA 2026-09-11 (ConBee II -> SONOFF ZBDongle-E).
+# Entity ids changed and were renamed to semantic ones at the same time:
+#     sensor.temperature_3          -> sensor.ac_vent_temperature
+#     sensor.humidity_4             -> sensor.ac_vent_humidity
+#     sensor.temperature_3_battery  -> sensor.ac_vent_battery
+#     binary_sensor.deconz_gateway_up -> binary_sensor.zigbee_gateway_up
+#
+# UNITS WERE CHECKED, NOT ASSUMED. ZHA reports this device in F
+# (unit_of_measurement '°F') exactly as deCONZ did, so sensor.ac_vent_delta's
+# subtraction against the ecobee's F reading is still valid and the calibrated
+# threshold below did NOT need rescaling. Verify this again if the HA unit
+# system is ever changed -- a silent C/F mismatch would make the delta read
+# about -20 and fire this alert permanently.
 #
 # This is the "real fix" that ac_compressor_monitor.yaml's header calls for. That
 # package infers compressor health from INDOOR temperature, which moves at only
@@ -109,7 +123,7 @@ template:
         icon: mdi:delta
         state: >-
           {% set indoor = state_attr('climate.my_ecobee', 'current_temperature') %}
-          {% set vent = states('sensor.temperature_3') %}
+          {% set vent = states('sensor.ac_vent_temperature') %}
           {% if indoor is not none and vent not in ['unknown', 'unavailable'] %}
             {{ (indoor | float - vent | float) | round(2) }}
           {% else %}
@@ -117,7 +131,7 @@ template:
           {% endif %}
         availability: >-
           {{ state_attr('climate.my_ecobee', 'current_temperature') is not none
-             and states('sensor.temperature_3') not in ['unknown', 'unavailable'] }}
+             and states('sensor.ac_vent_temperature') not in ['unknown', 'unavailable'] }}
 
   - binary_sensor:
       # Making the vent sensor primary means a dead sensor is a silent loss of
@@ -132,7 +146,7 @@ template:
         device_class: problem
         icon: mdi:access-point-check
         state: >-
-          {% set s = states.sensor.temperature_3 %}
+          {% set s = states.sensor.ac_vent_temperature %}
           {% set window = (states('input_number.ac_vent_stale_hours') | float(3)) * 3600 %}
           {{ s is not none
              and s.state not in ['unknown', 'unavailable']
@@ -188,7 +202,7 @@ automation:
             {{ states('input_number.ac_vent_confirm_minutes') }} min but vent delta
             is only {{ states('sensor.ac_vent_delta') }}F
             (threshold {{ states('input_number.ac_vent_delta_threshold') }}F).
-            Vent {{ states('sensor.temperature_3') }}F,
+            Vent {{ states('sensor.ac_vent_temperature') }}F,
             indoor {{ state_attr('climate.my_ecobee', 'current_temperature') }}F.
             Compressor likely not running.
       - action: persistent_notification.create
@@ -201,7 +215,7 @@ automation:
             supply vent is only {{ states('sensor.ac_vent_delta') }}F cooler than
             the room (needs {{ states('input_number.ac_vent_delta_threshold') }}F).
 
-            Vent {{ states('sensor.temperature_3') }}F,
+            Vent {{ states('sensor.ac_vent_temperature') }}F,
             indoor {{ state_attr('climate.my_ecobee', 'current_temperature') }}F,
             setpoint {{ state_attr('climate.my_ecobee', 'temperature') }}F.
 
@@ -253,26 +267,33 @@ automation:
     alias: AC Vent Sensor Offline
     description: >
       The vent sensor is the primary compressor watchdog, so losing it is a
-      silent loss of coverage. Pushes only when THIS sensor died while the deCONZ
-      gateway was healthy; a gateway freeze is logged and left to the watchdog.
+      silent loss of coverage. Pushes only when THIS sensor died while the
+      Zigbee gateway was healthy; a gateway-wide outage is logged and left to
+      ha/zigbee_health.yaml.
     mode: single
 
-    # ONLY PAGES FOR A REAL SENSOR FAILURE -- CHANGED 2026-09-09
-    # ----------------------------------------------------------
+    # ONLY PAGES FOR A REAL SENSOR FAILURE -- ADDED 2026-09-09, KEPT 2026-09-11
+    # -------------------------------------------------------------------------
     # `binary_sensor.ac_vent_sensor_healthy` goes off on TWO conditions: the
     # ac_vent_stale_hours window, and `state not in ['unknown','unavailable']`.
     # The second one fires the instant HA marks the sensor unavailable -- which
-    # happens on every deCONZ gateway freeze, regardless of the 3h window.
+    # happened on every deCONZ gateway freeze, regardless of the 3h window.
     #
-    # The gateway freezes ~8x/day for a median 53 min (see ha/deconz_watchdog.yaml).
-    # 58 of 80 freezes over 10 days exceeded the 30-minute `for:` below, so this
-    # was pushing ~5.8 times a day about a sensor whose battery reads 100% and
-    # which is not broken. That is how an alert gets learned-ignored.
+    # On deCONZ that gateway froze ~8x/day for a median 53 min, and 58 of 80
+    # freezes over 10 days exceeded the 30-minute `for:` below, so this was
+    # pushing ~5.8 times a day about a sensor whose battery reads 100% and which
+    # is not broken. That is how an alert gets learned-ignored.
     #
-    # So the two causes are now split. Gateway down -> log only, because
-    # deconz_freeze_watchdog already owns that case and alerts if its restart
-    # fails. This sensor specifically dead while the gateway is fine -> page,
-    # because that is a real dead battery or a device off the mesh.
+    # THE SPLIT IS KEPT EVEN THOUGH ITS ORIGINAL CAUSE IS GONE. The ZBDongle-E
+    # is expected to be stable, so the gateway branch below should now be cold.
+    # But "device died" and "gateway died" are genuinely different faults with
+    # different remedies, and the cost of keeping the distinction is one
+    # `choose`. If the gateway branch starts firing regularly, that is a real
+    # signal about the new coordinator -- read it, do not silence it.
+    #
+    # Gateway down -> log only; ha/zigbee_health.yaml owns that case and pages
+    # separately. This sensor dead while the gateway is fine -> page, because
+    # that is a real dead battery or a device off the mesh.
 
     trigger:
       - platform: state
@@ -287,14 +308,14 @@ automation:
       # freeze, and told you to check a battery that was at 100%.
       - variables:
           silent_minutes: >-
-            {% set s = states.sensor.temperature_3 %}
+            {% set s = states.sensor.ac_vent_temperature %}
             {{ ((now() - s.last_reported).total_seconds() / 60) | round
                if s is not none else 'an unknown number of' }}
 
       - choose:
           - conditions:
               - condition: state
-                entity_id: binary_sensor.deconz_gateway_up
+                entity_id: binary_sensor.zigbee_gateway_up
                 state: "on"
             sequence:
               - action: system_log.write
@@ -302,7 +323,7 @@ automation:
                   level: warning
                   logger: tubtron.ac_vent_monitor
                   message: >-
-                    AC VENT SENSOR OFFLINE: sensor.temperature_3 silent for
+                    AC VENT SENSOR OFFLINE: sensor.ac_vent_temperature silent for
                     {{ silent_minutes }} min while the deCONZ gateway is UP, so
                     this is the device itself. The vent compressor watchdog is
                     blind; only the slow indoor-temperature check in
@@ -316,7 +337,7 @@ automation:
                     {{ silent_minutes }} min while the rest of the Zigbee gateway
                     is working, so this is the device and not the gateway. The
                     primary AC compressor watchdog is not running. Check its
-                    battery ({{ states('sensor.temperature_3_battery') }}%) and
+                    battery ({{ states('sensor.ac_vent_battery') }}%) and
                     its Zigbee link.
               - action: notify.mobile_app_chris_iphone
                 data:
@@ -325,11 +346,11 @@ automation:
                     The vent temp sensor stopped reporting for
                     {{ silent_minutes }} min -- AC compressor monitoring is
                     degraded. Battery
-                    {{ states('sensor.temperature_3_battery') }}%.
+                    {{ states('sensor.ac_vent_battery') }}%.
 
-        # Gateway is down: every deCONZ entity is unavailable, not just this one.
-        # deconz_freeze_watchdog is restarting the add-on and will push if that
-        # fails, so pushing here too would page twice for one fault.
+        # Gateway is down: every Zigbee entity is unavailable, not just this one.
+        # zigbee_gateway_down (ha/zigbee_health.yaml) owns that case and pages
+        # separately, so pushing here too would page twice for one fault.
         default:
           - action: system_log.write
             data:
@@ -337,5 +358,5 @@ automation:
               logger: tubtron.ac_vent_monitor
               message: >-
                 AC vent sensor unavailable for {{ silent_minutes }} min, but the
-                deCONZ gateway is DOWN -- this is the gateway freeze, not the
-                sensor. No push sent; deconz_freeze_watchdog owns it.
+                Zigbee gateway is DOWN -- this is coordinator-wide, not this
+                sensor. No push sent; zigbee_gateway_down owns it.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnose false 'fridge door open' alerts from binary_sensor.openclose_5.
+"""Diagnose false 'fridge door open' alerts from binary_sensor.fridge_door.
 
 Observation-only: reads HA history and writes nothing back.
 
@@ -24,7 +24,7 @@ script always passes it explicitly.
 Usage:
     uv run scripts/diagnose_fridge_door.py
     uv run scripts/diagnose_fridge_door.py --days 14
-    uv run scripts/diagnose_fridge_door.py --entity binary_sensor.openclose_5
+    uv run scripts/diagnose_fridge_door.py --entity binary_sensor.fridge_door
 
 Reads HA_URL / HA_TOKEN from the environment or the gitignored .env, same as
 scripts/diagnose_tou.py.
@@ -42,16 +42,16 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DEFAULT_ENTITY = "binary_sensor.openclose_5"
+DEFAULT_ENTITY = "binary_sensor.fridge_door"
 
-# A second deCONZ device. If it drops out at the SAME timestamps as the door
-# sensor, the problem is the deCONZ gateway/integration, not the door sensor's
+# A second Zigbee device. If it drops out at the SAME timestamps as the door
+# sensor, the problem is the coordinator/integration, not the door sensor's
 # radio link -- one weak device cannot take another device offline.
-PEER_ZIGBEE = "sensor.temperature_3"
+PEER_ZIGBEE = "sensor.ac_vent_temperature"
 
-# A non-deCONZ entity on the same HA instance (ESPHome over WiFi). If it stays
-# available through the deCONZ dropouts, HA itself is healthy and the fault is
-# isolated to deCONZ. If it drops too, suspect HA restarts or the host.
+# A non-Zigbee entity on the same HA instance (ESPHome over WiFi). If it stays
+# available through the Zigbee dropouts, HA itself is healthy and the fault is
+# isolated to the Zigbee stack. If it drops too, suspect HA restarts or the host.
 CONTROL_ENTITY = "sensor.tublemetry_hot_tub_temperature"
 
 # Mirrors the automation's floor (input_number.fridge_door_open_minutes min: 3).
@@ -166,18 +166,20 @@ def main() -> int:
         origin = "AFTER DROPOUT" if prev == "unavailable" else f"from {prev}"
         print(f"  {t:%m-%d %H:%M:%S}  {flag}  open {mins:8.1f} min  ({origin})")
 
-    # Locate the fault: door sensor vs. a peer deCONZ device vs. a non-deCONZ control.
-    print("\nFAULT LOCALIZATION (is it this sensor, deCONZ, or HA?)")
+    # Locate the fault: door sensor vs. a peer Zigbee device vs. a non-Zigbee control.
+    print("\nFAULT LOCALIZATION (is it this sensor, the Zigbee gateway, or HA?)")
     door_stats = unavailability(seq[:-1])
     print(f"  {args.entity:45s} {door_stats[0]:4d} eps  {door_stats[1]:6.1f}h  {door_stats[2]:5.1f}%")
-    for label, ent in (("peer deCONZ device", PEER_ZIGBEE), ("non-deCONZ control", CONTROL_ENTITY)):
+    for label, ent in (("peer Zigbee device", PEER_ZIGBEE), ("non-Zigbee control", CONTROL_ENTITY)):
         try:
             stats = unavailability(fetch_history(base, token, ent, args.days))
         except SystemExit:
             print(f"  {ent:45s} (no history -- skipped)")
             continue
         print(f"  {ent:45s} {stats[0]:4d} eps  {stats[1]:6.1f}h  {stats[2]:5.1f}%   <- {label}")
-    print("  Peer matches door + control stays up  => deCONZ gateway fault, not the door sensor.")
+    print("  Peer matches door + control stays up  => Zigbee gateway fault, not the door sensor.")
+    print("  NOTE: history before 2026-09-11 is from the ConBee II/deCONZ coordinator")
+    print("        under old entity ids, so windows spanning that date will look empty.")
 
     alerting = [o for o in opens if o[1] / 60 > ALERT_THRESHOLD_MIN]
     after_dropout = [o for o in alerting if o[2] == "unavailable"]

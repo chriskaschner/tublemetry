@@ -6,11 +6,19 @@ HA packages require:
 - Each file is a standalone, self-contained package
 """
 
+import re
 from pathlib import Path
 
 import yaml
 
+from ha_yaml import load_ha_yaml
+
 HA_DIR = Path(__file__).parent.parent / "ha"
+
+# Anything that looks like a bare EUI-64 (8 colon-separated hex octets), i.e. a
+# Zigbee hardware address. ha/ is deployed to the PUBLIC tublemetry-ha repo, so
+# these must be sourced from /config/secrets.yaml via !secret instead.
+EUI64_RE = re.compile(r"\b(?:[0-9a-fA-F]{2}:){7}[0-9a-fA-F]{2}\b")
 
 # Files excluded from package validation
 DASHBOARD = "dashboard.yaml"
@@ -28,7 +36,11 @@ AUTOMATION_FILES = [
     "hot_tub_button.yaml",
     "ac_vent_monitor.yaml",
     "fridge_door.yaml",
-    "deconz_watchdog.yaml",
+    # deconz_watchdog.yaml was DELETED 2026-09-11 with the ConBee II. Its one
+    # still-useful idea (a witness that tells a dead device apart from a dead
+    # gateway) moved to zigbee_health.yaml; the rest of it existed only to
+    # restart an add-on that no longer exists.
+    "zigbee_health.yaml",
 ]
 
 # Files that are intentionally comment-only (deprecated / superseded).
@@ -71,13 +83,31 @@ def _package_files():
 
 
 def test_all_yaml_single_document():
-    """Every ha/*.yaml (except dashboard) parses with yaml.safe_load."""
+    """Every ha/*.yaml (except dashboard) parses as a single YAML document."""
     for path in _package_files():
-        text = path.read_text()
-        data = yaml.safe_load(text)
+        data = load_ha_yaml(path)
         assert data is not None or path.name in COMMENT_ONLY_FILES, (
             f"{path.name} did not parse as valid YAML"
         )
+
+
+# --- No hardware addresses in a publicly deployed directory ---
+
+
+def test_no_hardware_addresses_in_packages():
+    """No ha/*.yaml may contain a literal Zigbee EUI-64.
+
+    Everything in ha/ is pushed to the PUBLIC tublemetry-ha repo. Device
+    addresses belong in /config/secrets.yaml, referenced with !secret. This
+    catches the regression where someone inlines an address to make a broken
+    !secret lookup work.
+    """
+    offenders = {}
+    for path in sorted(HA_DIR.glob("*.yaml")):
+        found = EUI64_RE.findall(path.read_text())
+        if found:
+            offenders[path.name] = found
+    assert not offenders, f"hardware addresses inlined in ha/: {offenders}"
 
 
 # --- PKG-04: No multi-document separators ---
@@ -100,7 +130,7 @@ def test_automation_files_have_domain_key():
     """Each automation file has 'automation' as a top-level key containing a list."""
     for name in AUTOMATION_FILES:
         path = HA_DIR / name
-        data = yaml.safe_load(path.read_text())
+        data = load_ha_yaml(path)
         assert isinstance(data, dict), f"{name} did not parse as a dict"
         assert "automation" in data, f"{name} missing 'automation' top-level key"
         assert isinstance(data["automation"], list), (

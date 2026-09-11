@@ -1,6 +1,14 @@
-# Outdoor fridge door-ajar alerting -- SONOFF SNZB-04PR2 via deCONZ
+# Outdoor fridge door-ajar alerting -- SONOFF SNZB-04PR2 via ZHA
 #
-# binary_sensor.openclose_5, device_class 'opening': on = open, off = closed.
+# MIGRATED FROM deCONZ TO ZHA 2026-09-11 (ConBee II -> SONOFF ZBDongle-E).
+# Entity ids changed and were renamed to semantic ones at the same time:
+#     binary_sensor.openclose_5    -> binary_sensor.fridge_door
+#     sensor.openclose_5_battery   -> sensor.fridge_door_battery
+#
+# binary_sensor.fridge_door, device_class 'opening': on = open, off = closed.
+# The device_class was CHECKED on the ZHA entity after re-pairing, not assumed
+# to carry over -- it is still 'opening', so the on/off polarity below is
+# unchanged.
 #
 # Escalating by design (chosen 2026-08-31): an outdoor fridge in summer heat
 # loses its contents if a door is left ajar, and a single push is easy to miss
@@ -36,44 +44,59 @@
 # So the trigger now demands an 'off' -> 'on' edge. A repopulated 'on' after a
 # dropout is arriving from 'unavailable' and is ignored.
 #
-# KNOWN GAP, ACCEPTED: a door genuinely opened while deCONZ is disconnected
-# comes back as 'unavailable' -> 'on' and will NOT page. That is deliberate --
-# there is no way to tell it apart from the phantom, and at 9 false pages a day
-# the alert was being ignored anyway, which is worse. The gap closes on its own
-# once the gateway is fixed; until then the stuck-sensor watchdog below leaves a
-# silent persistent notification so a long 'on' is still visible without pushing.
-# Re-evaluate this gate once deCONZ dropouts are resolved.
+# KNOWN GAP, ACCEPTED: a door genuinely opened while the gateway is
+# disconnected comes back as 'unavailable' -> 'on' and will NOT page. That is
+# deliberate -- there is no way to tell it apart from the phantom, and at 9
+# false pages a day the alert was being ignored anyway, which is worse.
+#
+# GATE DELIBERATELY KEPT AT THE ZHA MIGRATION -- 2026-09-11
+# ---------------------------------------------------------
+# The cause of the phantom 'on' (deCONZ freezing and repopulating entities on
+# reconnect) is gone with the ConBee II. The honest position is that this makes
+# the gate PROBABLY unnecessary, not provably unnecessary: the new coordinator
+# has minutes of uptime, and removing a false-alert guard on the strength of an
+# expectation is how the 9-pages-a-day state was reached the first time.
+#
+# So the gate stays until there is stability data to justify removing it. The
+# thing to measure is `binary_sensor.zigbee_gateway_up` going off at all, plus
+# the ASH error counters on the coordinator device -- NOT the absence of
+# complaints, which this gate is specifically designed to produce. Once the
+# gateway has gone a couple of weeks without an unavailability episode, drop
+# `from: "off"` and close the gap.
 #
 # Diagnose with: uv run scripts/diagnose_fridge_door.py
 #
-# NO TAMPER ALERT -- INVESTIGATED 2026-08-31, BLOCKED ON deCONZ
-# -------------------------------------------------------------
-# The SNZB-04PR2 hardware HAS a tamper switch, but it is unreachable from HA
-# today. Do not re-derive this:
+# NO TAMPER ALERT -- STILL BLOCKED AFTER THE ZHA MIGRATION, 2026-09-11
+# --------------------------------------------------------------------
+# The SNZB-04PR2 hardware HAS a tamper switch and it remains unreachable.
 #
-#   - HA exposes only 3 entities for the device. Checked the ENTITY REGISTRY, not
-#     just the state machine -- there is no disabled tamper entity hiding either.
-#   - deCONZ 2.33.2 (add-on 8.7.2) is already current. Add-on 8.8.0 only swaps the
-#     base image to trixie; it does NOT bump deCONZ. Updating does not help.
-#   - Root cause: devices/sonoff/snzb-04_open_close_sensor.json defines items
-#     state/open, state/lowbattery, config/battery, config/enrolled,
-#     config/reachable -- and NO tamper item. The SNZB-04PR2 was added by cloning
-#     the plain SNZB-04 (PR #8598), which has no tamper switch at all. deCONZ
-#     parses only the IAS Zone alarm bit and discards the tamper bit.
-#   - Confirmed empirically: tripping the tamper switch on the live device emits
-#     NO deconz_event and no attribute change. It only produces sub-second
-#     open->close pulses on binary_sensor.openclose_5 (measured: 20:32:32 on ->
-#     20:32:33 off, then on->off inside the same second).
+# Migrating to ZHA was expected to fix this -- ZHA exposes IAS Zone tamper
+# natively, and that was written up as the likely bonus of leaving deCONZ. IT
+# DID NOT. Checked the ENTITY REGISTRY (not just the state machine) immediately
+# after re-pairing: ZHA creates exactly the same coverage deCONZ did --
+# binary_sensor (opening), battery, identify, firmware, plus disabled lqi/rssi
+# diagnostics. There is no tamper entity, disabled or otherwise.
+#
+# So the deCONZ DDF was never the whole story, and the earlier root-cause note
+# below is at best incomplete. Do not re-run the migration hoping for tamper.
+#
+# Previously established and still true:
+#   - deCONZ's devices/sonoff/snzb-04_open_close_sensor.json defines no tamper
+#     item; the SNZB-04PR2 was added by cloning the plain SNZB-04 (PR #8598),
+#     which has no tamper switch at all.
+#   - Confirmed empirically on the live device: tripping tamper emits NO event
+#     and no attribute change. It only produces sub-second open->close pulses
+#     (measured 20:32:32 on -> 20:32:33 off, then on->off inside one second).
 #
 # A short-pulse heuristic was considered and REJECTED (user, 2026-08-31): a door
 # slam or reed-switch chatter would false-trigger it, and a tamper alert you
 # learn to distrust is worse than none.
 #
-# THE REAL FIX when host file access is convenient: copy the stock DDF into
-# /config/deconz/devices/ and add a state/tampered item bound to bit 2 of the IAS
-# Zone Status attribute. deCONZ prefers user DDFs over bundled ones, and HA's
-# deCONZ integration already renders state/tampered as a tamper binary sensor.
-# Then wire the alert here using the REAL entity id -- do not guess it.
+# If tamper is ever wanted, the next thing to check is whether the device
+# reports the IAS Zone Status tamper bit at all on this firmware -- read
+# attribute 0x0002 of cluster 0x0500 directly via zha.set_zigbee_cluster_attribute
+# / the ZHA cluster UI before investing in a quirk. It is possible this unit
+# simply does not report it.
 #
 # Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
 
@@ -119,7 +142,7 @@ automation:
     # rare compared to the 9 false pages a day this removes.
     trigger:
       - platform: state
-        entity_id: binary_sensor.openclose_5
+        entity_id: binary_sensor.fridge_door
         from: "off"
         to: "on"
 
@@ -129,7 +152,7 @@ automation:
       # is still open.
       - wait_for_trigger:
           - platform: state
-            entity_id: binary_sensor.openclose_5
+            entity_id: binary_sensor.fridge_door
             to: "off"
         timeout: >-
           {{ (states('input_number.fridge_door_open_minutes') | int(3)) * 60 }}
@@ -143,7 +166,7 @@ automation:
       # Never act on a sensor that dropped off the mesh mid-wait -- 'unavailable'
       # is not 'open'.
       - condition: state
-        entity_id: binary_sensor.openclose_5
+        entity_id: binary_sensor.fridge_door
         state: "on"
 
       - action: input_boolean.turn_on
@@ -170,20 +193,20 @@ automation:
             # the loop exits promptly instead of running out a stale delay.
             - wait_for_trigger:
                 - platform: state
-                  entity_id: binary_sensor.openclose_5
+                  entity_id: binary_sensor.fridge_door
                   to: "off"
               timeout: "00:05:00"
               continue_on_timeout: true
           while:
             - condition: state
-              entity_id: binary_sensor.openclose_5
+              entity_id: binary_sensor.fridge_door
               state: "on"
             - condition: template
               value_template: "{{ repeat.index <= 12 }}"
 
       - if:
           - condition: state
-            entity_id: binary_sensor.openclose_5
+            entity_id: binary_sensor.fridge_door
             state: "off"
         then:
           - action: persistent_notification.dismiss
@@ -204,7 +227,7 @@ automation:
               logger: tubtron.fridge_door
               message: >-
                 FRIDGE DOOR: open for over an hour after 12 reminders. Either it
-                is genuinely open or binary_sensor.openclose_5 is stuck 'on'.
+                is genuinely open or binary_sensor.fridge_door is stuck 'on'.
           - action: persistent_notification.create
             data:
               title: "Outdoor fridge still open"
@@ -216,7 +239,7 @@ automation:
 
                 If the door is actually shut, the sensor may be stuck -- check the
                 magnet alignment and its battery
-                ({{ states('sensor.openclose_5_battery') }}%).
+                ({{ states('sensor.fridge_door_battery') }}%).
 
       - action: input_boolean.turn_off
         target:
@@ -226,19 +249,21 @@ automation:
   # NOT push: the whole point of the gate is that this transition is untrusted,
   # and pushing on it would just reinstate the false alerts on a 60-minute lag.
   # A persistent notification keeps a genuinely-open door visible in the UI, and
-  # the log line is the counter to watch while chasing the deCONZ dropouts --
-  # every firing here is one gateway reconnect that repopulated the door as open.
+  # the log line is the metric that decides whether the 'off' -> 'on' gate can
+  # be removed -- every firing here is one gateway reconnect that repopulated
+  # the door as open. On ZHA this should now be silent. If it stays silent, the
+  # gate can go; if it does not, the new coordinator has the old problem.
   - id: fridge_door_sensor_stuck_open
     alias: Fridge Door Sensor Stuck Open
     description: >
       Silent watchdog. The door sensor came back from a gateway dropout reading
       'open' and has stayed that way for an hour, which is either a phantom
-      state or a door that was opened while deCONZ was disconnected.
+      state or a door that was opened while the gateway was disconnected.
     mode: single
 
     trigger:
       - platform: state
-        entity_id: binary_sensor.openclose_5
+        entity_id: binary_sensor.fridge_door
         from: "unavailable"
         to: "on"
         for:
@@ -250,7 +275,7 @@ automation:
           level: warning
           logger: tubtron.fridge_door
           message: >-
-            FRIDGE DOOR: binary_sensor.openclose_5 returned from a gateway
+            FRIDGE DOOR: binary_sensor.fridge_door returned from a gateway
             dropout as 'on' and held for 60 min. No push sent (untrusted
             transition). Run scripts/diagnose_fridge_door.py.
       - action: persistent_notification.create
@@ -258,12 +283,15 @@ automation:
           title: "Outdoor fridge reads open (unverified)"
           notification_id: fridge_door_stuck
           message: >-
-            binary_sensor.openclose_5 came back from a deCONZ dropout reading
-            open and has held for an hour. No push was sent because a
+            binary_sensor.fridge_door came back from a Zigbee gateway dropout
+            reading open and has held for an hour. No push was sent because a
             'unavailable' -> 'on' transition is not trusted.
 
-            If the door is actually shut, this is the known deCONZ gateway fault
-            and can be ignored. If it is actually open, the gate cost you an
+            If the door is actually shut, the coordinator dropped out and
+            repopulated the sensor as open. That was routine on the old ConBee
+            II, but it should NOT happen on the ZBDongle-E -- if you are seeing
+            this notice after 2026-09-11, the new gateway has a problem worth
+            investigating. If the door is actually open, the gate cost you an
             alert -- go check.
 
   # Clears the watchdog notice as soon as the sensor reports a real close, so a
@@ -273,7 +301,7 @@ automation:
     mode: single
     trigger:
       - platform: state
-        entity_id: binary_sensor.openclose_5
+        entity_id: binary_sensor.fridge_door
         to: "off"
     action:
       - action: persistent_notification.dismiss

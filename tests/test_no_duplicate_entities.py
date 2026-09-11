@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+from ha_yaml import load_ha_yaml
+
 HA_DIR = Path(__file__).parent.parent / "ha"
 SKIP = {"dashboard.yaml"}
 
@@ -49,7 +51,7 @@ def test_no_entity_defined_by_two_packages():
     for path in sorted(HA_DIR.glob("*.yaml")):
         if path.name in SKIP:
             continue
-        data = yaml.safe_load(path.read_text())
+        data = load_ha_yaml(path)
         for kind, ident in _identifiers(data):
             owners[(kind, ident)].append(path.name)
 

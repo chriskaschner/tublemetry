@@ -15,7 +15,7 @@ HA_DIR = Path(__file__).parent.parent / "ha"
 VENT_FILE = HA_DIR / "ac_vent_monitor.yaml"
 LEGACY_FILE = HA_DIR / "ac_compressor_monitor.yaml"
 
-VENT_SENSOR = "sensor.temperature_3"
+VENT_SENSOR = "sensor.ac_vent_temperature"
 
 
 @pytest.fixture
@@ -165,7 +165,7 @@ def test_offline_alert_is_gated_on_gateway_health(pkg):
     choose = next(s for s in offline["action"] if "choose" in s)
     conds = choose["choose"][0]["conditions"]
     assert any(
-        c.get("entity_id") == "binary_sensor.deconz_gateway_up" and c.get("state") == "on"
+        c.get("entity_id") == "binary_sensor.zigbee_gateway_up" and c.get("state") == "on"
         for c in conds
     ), "push branch is not gated on gateway health"
     assert any(s.get("action") == "notify.mobile_app_chris_iphone" for s in up_branch)

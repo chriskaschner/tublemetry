@@ -1,0 +1,144 @@
+# Zigbee coordinator health -- ZHA / SONOFF ZBDongle-E
+#
+# REPLACES ha/deconz_watchdog.yaml, DELETED 2026-09-11 with the ConBee II.
+#
+# WHY THIS PACKAGE IS SO MUCH SMALLER THAN THE ONE IT REPLACES
+# ------------------------------------------------------------
+# deconz_watchdog.yaml existed to paper over a specific defect: the deCONZ
+# add-on process froze 20-110 min at a time, ~8x/day, because its serial thread
+# blocked in the kernel (`tty_wait_until_sent`) holding the mutex the Qt main
+# loop needed, taking HTTP, websocket, Zigbee and logging down together. The
+# mitigation was to watch the add-on's CPU and restart it.
+#
+# None of that scaffolding transfers:
+#   - There is no add-on to restart. ZHA runs inside HA core, so the failure
+#     mode "the integration is wedged but HA is fine" has no equivalent remedy;
+#     if ZHA genuinely dies the answer is an HA restart, which is a different
+#     and much louder problem.
+#   - `sensor.deconz_cpu_percent` measured a container. There is no container.
+#   - `counter.deconz_watchdog_restarts` counted a mitigation that no longer
+#     exists.
+#
+# So what remains is the ONE genuinely useful thing that package provided: a
+# witness that tells a dead DEVICE apart from a dead GATEWAY. That distinction
+# is not deCONZ-specific and is worth keeping -- see the gate note in
+# ha/ac_vent_monitor.yaml for why (it was suppressing ~5.8 false pages a day).
+#
+# DO NOT ADD A RESTART LOOP HERE WITHOUT EVIDENCE. The deCONZ watchdog also
+# destroyed the ability to measure the underlying fault: it truncated every
+# freeze at exactly its 10-minute `for:`, so duration and downtime stopped
+# describing the coordinator and started describing the mitigation. If this
+# coordinator turns out to have its own fault, measure COUNT and RATE first.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+template:
+  - binary_sensor:
+      # Off ONLY when every Zigbee witness is simultaneously unavailable.
+      #
+      # One device going unavailable is a dead battery or a device off the mesh.
+      # ALL of them going unavailable at once is the coordinator. Requiring
+      # unanimity is deliberate: it makes this sensor specific to gateway-level
+      # failure, which is what the consumers of it need in order to decide
+      # whether to page about a device.
+      #
+      # Witnesses are the two ALWAYS-REPORTING devices. The button is excluded
+      # on purpose -- it is a sleepy end device that only speaks when pressed,
+      # so it can look unavailable for entirely innocent reasons.
+      - name: "Zigbee Gateway Up"
+        unique_id: zigbee_gateway_up
+        device_class: connectivity
+        icon: mdi:zigbee
+        state: >-
+          {% set vent = states('sensor.ac_vent_temperature') %}
+          {% set door = states('binary_sensor.fridge_door') %}
+          {% set dead = ['unknown', 'unavailable'] %}
+          {{ not (vent in dead and door in dead) }}
+
+  - sensor:
+      # Weakest link in the mesh. Useful when judging whether a device that
+      # dropped off did so because of signal rather than battery.
+      - name: "Zigbee Min LQI"
+        unique_id: zigbee_min_lqi
+        state_class: measurement
+        icon: mdi:signal-distance-variant
+        state: >-
+          {% set vals = [
+               states('sensor.ac_vent_lqi'),
+               states('sensor.fridge_door_lqi'),
+               states('sensor.hot_tub_button_lqi')
+             ] | reject('in', ['unknown', 'unavailable']) | map('int') | list %}
+          {{ vals | min if vals | length > 0 else none }}
+        availability: >-
+          {{ [ states('sensor.ac_vent_lqi'),
+               states('sensor.fridge_door_lqi'),
+               states('sensor.hot_tub_button_lqi') ]
+             | reject('in', ['unknown', 'unavailable']) | list | length > 0 }}
+
+automation:
+  - id: zigbee_gateway_down
+    alias: Zigbee Gateway Down
+    description: >
+      Every Zigbee device went unavailable at once, which points at the
+      coordinator rather than any single device. Deliberately slow to fire --
+      this is a "go look at it" alert, not a treadmill.
+    mode: single
+
+    # 15 minutes is chosen against the deCONZ baseline it replaces: that gateway
+    # dropped out ~8x/day for a median 53 min, so a 15-minute window would have
+    # paged constantly there. On a coordinator that is expected to be stable,
+    # 15 minutes of total Zigbee silence is genuinely worth knowing about. If
+    # this fires repeatedly, do NOT lengthen the window to silence it -- that is
+    # the mistake the deCONZ watchdog institutionalized. Investigate instead.
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.zigbee_gateway_up
+        to: "off"
+        for:
+          minutes: 15
+
+    action:
+      - action: system_log.write
+        data:
+          level: error
+          logger: tubtron.zigbee_health
+          message: >-
+            ZIGBEE GATEWAY DOWN: every Zigbee witness has been unavailable for
+            15 min. Coordinator is SONOFF ZBDongle-E on
+            /dev/serial/by-id/usb-Itead_Sonoff_Zigbee_3.0_USB_Dongle_Plus_V2_*.
+            Check the ZHA integration and the ASH error counters.
+      - action: persistent_notification.create
+        data:
+          title: "Zigbee gateway down"
+          notification_id: zigbee_gateway_down
+          message: >-
+            All Zigbee devices have been unavailable for 15 minutes, so this is
+            the coordinator rather than one device.
+
+            Fridge door alerting and the AC supply-air watchdog are both blind
+            while this persists.
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "Zigbee gateway down"
+          message: >-
+            All Zigbee devices unavailable for 15 min -- fridge and AC vent
+            monitoring are offline. Check ZHA.
+
+  - id: zigbee_gateway_recovered
+    alias: Zigbee Gateway Recovered
+    description: Clears the gateway-down notice once any device reports again.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.zigbee_gateway_up
+        to: "on"
+        for:
+          minutes: 2
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states.persistent_notification is not none }}
+    action:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: zigbee_gateway_down

@@ -1,15 +1,50 @@
-# Hot Tub physical button control (SONOFF SNZB-01P via deCONZ)
+# Hot Tub physical button control (eWeLink SNZB-01P via ZHA)
 #
-# One physical button, three gestures, captured live from the device on
-# 2026-08-31 with scripts/capture_button_events.py (2 clean passes, no stray or
-# precursor events, so no debounce logic is needed):
+# MIGRATED FROM deCONZ TO ZHA 2026-09-11. The ConBee II was retired for the
+# freeze documented in ha/deconz_watchdog.yaml's header; the coordinator is now
+# a SONOFF ZBDongle-E running under ZHA. The gestures are identical, but the
+# event bus, the event name and the payload shape all changed:
 #
-#   deconz_event id=roundbutton event=1002  single press  -> Max setpoint
-#   deconz_event id=roundbutton event=1004  double press  -> Coast setpoint
-#   deconz_event id=roundbutton event=1003  long press    -> resume TOU schedule
+#   OLD  deconz_event  id=roundbutton  event=1002 / 1004 / 1003
+#   NEW  zha_event     device_ieee=... command=toggle / on / off
 #
-# NOTE 1003 is "long RELEASE". The device never emitted 1001 ("hold"), so a long
-# press fires exactly once, on release -- no repeat-while-held to defend against.
+# One physical button, three gestures, RECAPTURED live from the device on
+# 2026-09-11 with scripts/capture_button_events.py after re-pairing:
+#
+#   zha_event command=toggle  single press  -> Max setpoint    (5 observations)
+#   zha_event command=on      double press  -> Coast setpoint  (4 observations)
+#   zha_event command=off     long press    -> resume TOU      (4 observations)
+#
+# These are OBSERVED values. The ZHA command names are NOT semantic -- "on" does
+# not mean "turn on" here, it is simply the ZCL On/Off cluster command the
+# device happens to emit for a double press. Do not "fix" them to look sensible.
+#
+# MATCHED ON device_ieee, NOT device_id. The IEEE is burned into the radio and
+# survived the deCONZ -> ZHA migration unchanged, so it also survives any future
+# re-pair. HA's `device_id` is a registry key that is regenerated whenever the
+# device is removed and re-added, which is exactly what a coordinator migration
+# does.
+#
+# THE IEEE IS A !secret, AND THAT IS LOAD-BEARING. This file is deployed to the
+# PUBLIC tublemetry-ha repo, so the hardware address lives in /config/secrets.yaml
+# instead:
+#
+#     hot_tub_button_ieee: "cc:36:..:..:..:..:..:.."
+#
+# If that key is missing, HA fails to load this ENTIRE package -- which takes
+# script.hot_tub_apply_setpoint and every dashboard button down with it, not just
+# the physical button. Add the secret BEFORE deploying this file, and never
+# inline a literal address here to "just make it work".
+#
+# The device also emits a `command=attribute_updated` event alongside every
+# gesture (the On/Off cluster attribute mirroring). Matching on the three
+# gesture commands excludes it naturally -- do not trigger on the cluster
+# attribute or every press fires twice.
+#
+# NOTE a long press that is not held long enough degrades to `toggle`, i.e. it
+# reads as a single press and applies Max instead of resuming the schedule.
+# Observed once during capture. Harmless (a second long press fixes it) but it
+# is the device's behavior, not a bug to chase.
 #
 # WHY AN OVERRIDE FLAG EXISTS
 # ---------------------------
@@ -161,6 +196,120 @@ script:
               Check the panel.
             {% endif %}
 
+  # --- Dashboard-facing wrappers -------------------------------------------
+  #
+  # These exist so a Lovelace card can trigger the SAME code path as the
+  # physical button -- guards, override flag, and confirm-before-notifying all
+  # inherited from hot_tub_apply_setpoint rather than reimplemented.
+  #
+  # WHY WRAPPERS INSTEAD OF CALLING THE SCRIPT FROM THE CARD
+  # Lovelace action data is not templated. A card calling hot_tub_apply_setpoint
+  # directly would have to hardcode `target: 102`, which silently ignores the
+  # seasonal sliders -- the exact bug the sliders were added to prevent. Each
+  # wrapper resolves its slider at run time, so dragging Max to 104 for winter
+  # changes what "Set to Hot" means with no dashboard edit.
+
+  hot_tub_set_hot:
+    alias: "Hot Tub: Set to Hot"
+    icon: mdi:fire
+    mode: restart
+    sequence:
+      - action: script.hot_tub_apply_setpoint
+        data:
+          target: "{{ states('input_number.hot_tub_max_setpoint') | int(102) }}"
+          label: "Max"
+          set_override: true
+
+  hot_tub_set_cold:
+    alias: "Hot Tub: Set to Cold"
+    icon: mdi:snowflake
+    mode: restart
+    sequence:
+      - action: script.hot_tub_apply_setpoint
+        data:
+          target: "{{ states('input_number.hot_tub_coast_setpoint') | int(90) }}"
+          label: "Coast"
+          set_override: true
+
+  # The long-press escape hatch, reachable from the app. Without this, an
+  # override raised from the dashboard can only be cleared by walking to the
+  # tub and long-pressing, or by waiting for the next boundary.
+  hot_tub_resume_schedule:
+    alias: "Hot Tub: Resume Schedule"
+    icon: mdi:calendar-clock
+    mode: restart
+    sequence:
+      - action: script.hot_tub_apply_setpoint
+        data:
+          target: "{{ states('sensor.hot_tub_expected_setpoint') | int(102) }}"
+          label: "Schedule"
+          set_override: false
+
+  # --- One-degree nudges ----------------------------------------------------
+  #
+  # These replace the "Hot Tub Temp Up/Down (Test)" buttons on the dashboard.
+  # Those fire ONE raw relay pulse (button_injector.cpp press_once -> TEST_PRESS),
+  # and on a Balboa panel the first press only wakes the display and reveals the
+  # setpoint without incrementing -- which is why they need pressing repeatedly.
+  # They also set known_setpoint_ = NAN, forcing a probe down-press at the next
+  # TOU boundary. Route through the closed loop instead, which is immune to the
+  # wake press (button_injector.cpp:308).
+  #
+  # Base is the PANEL's confirmed setpoint, not the commanded one, so a nudge
+  # after a failed injection moves from where the tub actually is. Falls back to
+  # the commanded value when the panel reading is unavailable.
+  #
+  # Refusing at the clamp is deliberate: hot_tub_apply_setpoint would accept a
+  # no-op target and the firmware would run the full retry ladder against zero
+  # required presses, latching last_command_result = failed (the known no-op
+  # bug). Better to say "already at maximum" than to fake a failure.
+
+  hot_tub_nudge_up:
+    alias: "Hot Tub: Temp Up 1F"
+    icon: mdi:thermometer-plus
+    mode: restart
+    sequence:
+      - variables:
+          base: >-
+            {{ states('sensor.tublemetry_hot_tub_detected_setpoint')
+               | int(states('number.tublemetry_hot_tub_setpoint') | int(102)) }}
+      - if: "{{ base + 1 > 104 }}"
+        then:
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Hot tub: already at maximum"
+              message: >-
+                The panel is at {{ base }}F, the highest the controller allows.
+          - stop: "at ceiling"
+      - action: script.hot_tub_apply_setpoint
+        data:
+          target: "{{ base + 1 }}"
+          label: "Temp Up"
+          set_override: true
+
+  hot_tub_nudge_down:
+    alias: "Hot Tub: Temp Down 1F"
+    icon: mdi:thermometer-minus
+    mode: restart
+    sequence:
+      - variables:
+          base: >-
+            {{ states('sensor.tublemetry_hot_tub_detected_setpoint')
+               | int(states('number.tublemetry_hot_tub_setpoint') | int(102)) }}
+      - if: "{{ base - 1 < 80 }}"
+        then:
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Hot tub: already at minimum"
+              message: >-
+                The panel is at {{ base }}F, the lowest the controller allows.
+          - stop: "at floor"
+      - action: script.hot_tub_apply_setpoint
+        data:
+          target: "{{ base - 1 }}"
+          label: "Temp Down"
+          set_override: true
+
 automation:
   - id: hot_tub_button_control
     alias: Hot Tub Button Control
@@ -175,22 +324,22 @@ automation:
 
     trigger:
       - platform: event
-        event_type: deconz_event
+        event_type: zha_event
         event_data:
-          id: roundbutton
-          event: 1002
+          device_ieee: !secret hot_tub_button_ieee
+          command: toggle
         id: single_press
       - platform: event
-        event_type: deconz_event
+        event_type: zha_event
         event_data:
-          id: roundbutton
-          event: 1004
+          device_ieee: !secret hot_tub_button_ieee
+          command: "on"
         id: double_press
       - platform: event
-        event_type: deconz_event
+        event_type: zha_event
         event_data:
-          id: roundbutton
-          event: 1003
+          device_ieee: !secret hot_tub_button_ieee
+          command: "off"
         id: long_press
 
     action:

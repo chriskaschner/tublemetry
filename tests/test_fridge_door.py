@@ -12,7 +12,7 @@ import yaml
 
 FRIDGE_FILE = Path(__file__).parent.parent / "ha" / "fridge_door.yaml"
 
-DOOR_SENSOR = "binary_sensor.openclose_5"
+DOOR_SENSOR = "binary_sensor.fridge_door"
 
 
 @pytest.fixture
