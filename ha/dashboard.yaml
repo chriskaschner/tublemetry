@@ -121,3 +121,134 @@ entities:
     name: TOU Schedule
   - entity: input_boolean.thermal_runaway_active
     name: Thermal Runaway
+
+---
+# Card 9: Hot Tub Control -- replaces the hand-built card whose "Temp Up" and
+# "Temp Down" rows pointed at button.tublemetry_hot_tub_temp_up_test /
+# _temp_down_test. Those fire ONE raw relay pulse with no wake-press make-up and
+# no verification, so the first press only wakes the panel -- hence having to
+# press repeatedly. They also clear the injector's cached setpoint, forcing a
+# probe down-press at the next TOU boundary. The script rows below run the
+# closed loop instead and hold until the next schedule boundary.
+type: entities
+title: Hot Tub Control
+entities:
+  - entity: sensor.tublemetry_hot_tub_display
+    name: Panel Display
+  - entity: sensor.tublemetry_hot_tub_temperature
+    name: Water Temperature
+  - entity: sensor.tublemetry_hot_tub_detected_setpoint
+    name: Detected Setpoint
+  - entity: number.tublemetry_hot_tub_setpoint
+    name: Setpoint
+  - type: divider
+  - entity: script.hot_tub_nudge_up
+    name: Temp Up
+    icon: mdi:thermometer-plus
+  - entity: script.hot_tub_nudge_down
+    name: Temp Down
+    icon: mdi:thermometer-minus
+  - entity: script.hot_tub_resume_schedule
+    name: Resume Schedule
+    icon: mdi:calendar-clock
+  - type: divider
+  - entity: binary_sensor.tublemetry_hot_tub_heater
+    name: Heater
+  - entity: binary_sensor.tublemetry_hot_tub_pump
+    name: Pump
+  - entity: sensor.tublemetry_hot_tub_display_state
+    name: Display State
+  - entity: input_boolean.hot_tub_manual_override
+    name: Manual Override
+
+---
+# Card 10: Set to Hot / Set to Cold.
+# tap_action is stated explicitly rather than relying on the button card's
+# default (`toggle`, which happens to run a script but is not documented to).
+# perform-action / perform_action is the current syntax; the older
+# call-service / service spelling is no longer what the docs describe.
+type: horizontal-stack
+cards:
+  - type: button
+    name: Set to Hot
+    icon: mdi:fire
+    entity: script.hot_tub_set_hot
+    show_state: false
+    tap_action:
+      action: perform-action
+      perform_action: script.hot_tub_set_hot
+  - type: button
+    name: Set to Cold
+    icon: mdi:snowflake
+    entity: script.hot_tub_set_cold
+    show_state: false
+    tap_action:
+      action: perform-action
+      perform_action: script.hot_tub_set_cold
+
+---
+# Card 11: Seasonal setpoint sliders, EDITABLE.
+# A bare tile card renders an input_number read-only -- it shows the state and
+# nothing else, which is why "Hot Tub Max Setpoint 102 F" could not be changed.
+# The numeric-input feature is what makes it settable. Verified against
+# home-assistant.io/dashboards/features: it supports the number and
+# input_number domains, and `style` is "slider" (default) or "buttons" --
+# NOT "box".
+type: horizontal-stack
+cards:
+  - type: tile
+    entity: input_number.hot_tub_max_setpoint
+    name: Max Setpoint
+    features:
+      - type: numeric-input
+        style: buttons
+  - type: tile
+    entity: input_number.hot_tub_coast_setpoint
+    name: Coast Setpoint
+    features:
+      - type: numeric-input
+        style: buttons
+
+---
+# Card 12: Mode indicator light (ha/hot_tub_mode_light.yaml).
+# light.nightlight is the ThirdReality Zigbee nightlight; its color and
+# brightness are driven by automation.hot_tub_mode_light, not by this card.
+# Adjust brightness with the sliders on Card 13, NOT the light's own
+# brightness control -- see the header of hot_tub_mode_light.yaml for why a
+# direct change there does not stick.
+type: entities
+title: Hot Tub Mode Light
+entities:
+  - entity: sensor.hot_tub_mode
+    name: Mode
+  - entity: sensor.hot_tub_nightlight_brightness
+    name: Target Brightness
+  - entity: sensor.nightlight_illuminance
+    name: Ambient Light
+  - entity: light.nightlight
+    name: Nightlight
+  - entity: automation.hot_tub_mode_light
+    name: Mode Light Automation
+
+---
+# Card 13: Nightlight day/night brightness sliders, EDITABLE.
+# Same tile + numeric-input pattern as Card 11 -- a bare tile card renders an
+# input_number read-only. Default style ("slider") is used here on purpose,
+# since these are free-form taste values rather than a precise setpoint.
+type: vertical-stack
+cards:
+  - type: tile
+    entity: input_number.hot_tub_nightlight_day_brightness
+    name: Day Brightness
+    features:
+      - type: numeric-input
+  - type: tile
+    entity: input_number.hot_tub_nightlight_night_brightness
+    name: Night Brightness
+    features:
+      - type: numeric-input
+  - type: tile
+    entity: input_number.hot_tub_nightlight_day_threshold
+    name: Day/Night Threshold (lx)
+    features:
+      - type: numeric-input
