@@ -21,8 +21,11 @@ class SetModeStateMachine:
 
     The feed() method mirrors the blank/numeric/other branching in C++.
     Returns a tuple (event_type, value):
-      - ('temperature', float)  — normal temperature published
-      - ('suppressed', float)   — temperature during set mode (not published)
+      - ('temperature', float)  — not a set-mode candidate
+      - ('suppressed', float)   — set-mode candidate for the detected setpoint
+
+    Whether a numeric frame reaches the water temperature sensor is decided
+    separately by water_temp_gate.h (tests/test_water_temp_gate.py), not here.
       - ('setpoint', float)     — setpoint confirmed and published
       - ('blank', None)         — blank frame processed
       - ('other', None)         — non-numeric, non-blank display (state string)

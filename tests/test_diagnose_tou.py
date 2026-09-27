@@ -211,4 +211,4 @@ def test_age_days():
 
 def test_repo_component_version_matches_header():
     # The script reads the same literal the firmware publishes.
-    assert d.repo_component_version() == "0.2.0"
+    assert d.repo_component_version() == "0.3.0"
