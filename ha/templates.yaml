@@ -41,3 +41,76 @@ template:
       # thermal_model.yaml (its single source, alongside the heating/cooling rate
       # sensors they depend on). They were removed from here to stop the
       # duplicate ..._2 registration.
+
+  # --- Trustworthy water temperature -----------------------------------------
+  #
+  # WHY THIS EXISTS: sensor.tublemetry_hot_tub_temperature cannot be trusted.
+  # esphome/tublemetry.yaml filters it with `delta: 1.0`, and ESPHome's delta
+  # test is STRICTLY greater (DeltaFilter min=1.0, `delta > min`). The panel
+  # decodes through atoi(), so water temperature is always an integer F and every
+  # real one-degree step is exactly 1.0 -- and therefore discarded. Only jumps of
+  # >= 2 F survive, which on this tub means setpoint flashes and injection
+  # artifacts. The filter blocks the signal and passes the noise.
+  # Observed twice on 2026-09-09: panel 102 / sensor 103, then panel 104 /
+  # sensor 103. Off by exactly one, which is the signature.
+  #
+  # This reconstructs water temperature from the raw display instead. Same
+  # method the coast analysis used, validated to within 1% against an energy
+  # balance on the 09-07 drain/refill (383 min of heater = 28.1 kWh measured vs
+  # ~28.4 kWh required).
+  #
+  # Retire this once the firmware is reflashed without the delta filter.
+  #
+  # WHY TRIGGER-BASED: a trigger template sensor HOLDS its last value when the
+  # conditions are not met, so setpoint flashes and blank frames are skipped
+  # rather than published. A state-based template would have to self-reference
+  # to achieve that.
+  #
+  # WHY THE 30s STABILITY GATE IS THE LOAD-BEARING PART: display_state reads
+  # "temperature" for setpoint flashes too -- classify_display_state_() sets it
+  # from `is_numeric` alone, BEFORE the in_set_mode_ check, so it cannot
+  # distinguish them (tublemetry_display.cpp ~355). What does distinguish them is
+  # duration: in set mode the panel alternates blank/value about once a second,
+  # while a real water reading holds for minutes (measured summer drift is under
+  # 0.13 F/hr, and even mid-heat it is ~1 F per 13 min). Requiring 30s of
+  # stability excludes flashes regardless of who caused them -- which matters
+  # because a MANUAL panel press leaves injection_phase idle and would otherwise
+  # slip through the 5-minute heartbeat tick.
+  - trigger:
+      - platform: state
+        entity_id: sensor.tublemetry_hot_tub_display
+        for: "00:00:30"
+      # Heartbeat: guarantees liveness and re-populates after an HA restart,
+      # since trigger templates come back `unknown` and the display may hold a
+      # steady value for hours without ever firing a state trigger.
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: state
+        entity_id: sensor.tublemetry_hot_tub_display_state
+        state: temperature
+      # Belt and braces for HA-driven injections; the stability gate below is
+      # what actually catches manual presses.
+      - condition: state
+        entity_id: sensor.tublemetry_hot_tub_injection_phase
+        state: idle
+      - condition: template
+        value_template: >-
+          {% set s = states.sensor.tublemetry_hot_tub_display %}
+          {{ s is not none and (now() - s.last_changed).total_seconds() >= 30 }}
+      # Guards partial decodes. A frame mid-transition can strip to "02" and
+      # still read as numeric.
+      - condition: template
+        value_template: >-
+          {% set v = states('sensor.tublemetry_hot_tub_display') | int(-1) %}
+          {{ 40 <= v <= 115 }}
+    sensor:
+      - name: "Hot Tub Water Temperature"
+        unique_id: hot_tub_water_temperature
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:pool-thermometer
+        state: "{{ states('sensor.tublemetry_hot_tub_display') | int }}"
