@@ -1,0 +1,78 @@
+# Roborock Q5 Pro -- "park the vacuum" for Siri
+#
+# Run from an iOS Shortcut via the Companion app's "Run Script" action. Built as
+# a script rather than a Shortcut "Perform action" step because the latter
+# failed on the phone with "no server provided" (2026-09-27), while Run Script
+# already worked for the hot tub.
+#
+# Park = send it back to the dock if it is off the dock. A scheduled run lives
+# in the Roborock app, which HA cannot see or edit, so this stops a run in
+# progress; it does not cancel a future one (decided 2026-09-24: no skip flag).
+#
+# Siri gives no feedback of its own, so every path ends in a push, and "heading
+# home" is only claimed after the vacuum has actually changed state.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+script:
+  vacuum_park:
+    alias: "Vacuum: Park"
+    icon: mdi:robot-vacuum
+    mode: single
+    max_exceeded: silent
+    sequence:
+      - variables:
+          plan: >-
+            {% set s = states('vacuum.q5_pro') %}
+            {% if s in ['cleaning', 'paused', 'idle', 'error'] %}send_home
+            {% elif s == 'returning' %}already_returning
+            {% elif s == 'docked' %}already_docked
+            {% else %}offline{% endif %}
+
+      - choose:
+          - conditions: "{{ plan == 'send_home' }}"
+            sequence:
+              - action: vacuum.return_to_base
+                target:
+                  entity_id: vacuum.q5_pro
+              - wait_template: "{{ states('vacuum.q5_pro') in ['returning', 'docked'] }}"
+                timeout: "00:00:30"
+                continue_on_timeout: true
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: >-
+                    {% if wait.completed %}Vacuum heading home
+                    {%- else %}Vacuum may not be heading home{% endif %}
+                  message: >-
+                    {% if wait.completed %}
+                      Stopped the run in {{ states('sensor.q5_pro_current_room') }}.
+                      Battery {{ states('sensor.q5_pro_battery') }}%.
+                    {% else %}
+                      Sent it home but it still reads {{ states('vacuum.q5_pro') }}
+                      after 30 s (error: {{ states('sensor.q5_pro_vacuum_error') }}).
+                      Check the Roborock app.
+                    {% endif %}
+
+          - conditions: "{{ plan == 'already_returning' }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Vacuum already heading home"
+                  message: "It was on its way back to the dock, so nothing was sent."
+
+          - conditions: "{{ plan == 'already_docked' }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Vacuum already docked"
+                  message: >-
+                    It is on the dock (battery {{ states('sensor.q5_pro_battery') }}%),
+                    so nothing was sent.
+
+        default:
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Vacuum not reachable"
+              message: >-
+                The vacuum reads {{ states('vacuum.q5_pro') }}, so it could not be
+                sent home. Check the Roborock app.
