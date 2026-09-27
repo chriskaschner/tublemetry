@@ -41,7 +41,7 @@ def _plan_template(script) -> str:
 
 def plan_for(script, state: str) -> str:
     tmpl = _ENV.from_string(_plan_template(script))
-    return tmpl.render(states=lambda e: state if e == VACUUM else "unknown").strip()
+    return tmpl.render(states=lambda e: state if e == VACUUM else "unknown")
 
 
 def _choose(script) -> dict:

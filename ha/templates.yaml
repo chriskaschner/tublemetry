@@ -15,6 +15,11 @@ template:
       # Schedule (weekday):  04:30-10:00 max | 10:00-17:30 coast |
       #   17:30-19:00 max-2 (evening preheat) | 19:00-22:00 max | 22:00-04:30 coast
       # Schedule (weekend):  05:00-22:00 max | 22:00-05:00 coast
+      #
+      # AWAY HOLD: while input_boolean.hot_tub_away_hold is on, the hold setpoint
+      # replaces the schedule entirely (hot_tub_hold.yaml). Checked with states()
+      # == 'on' so an unknown flag right after a restart never counts as a hold,
+      # and an unusable hold temperature falls back to the schedule.
       - name: "Hot Tub Expected Setpoint"
         unit_of_measurement: "°F"
         icon: mdi:thermometer-auto
@@ -34,6 +39,10 @@ template:
           {%   if 300 <= hm < 1320 %}{% set sp = maxsp %}
           {%   else %}{% set sp = coast %}
           {%   endif %}
+          {% endif %}
+          {% set hold_temp = states('input_number.hot_tub_hold_setpoint') | int(0) %}
+          {% if states('input_boolean.hot_tub_away_hold') == 'on' and 80 <= hold_temp <= 104 %}
+          {%   set sp = hold_temp %}
           {% endif %}
           {{ sp }}
 

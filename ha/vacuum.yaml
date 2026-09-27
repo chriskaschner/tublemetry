@@ -23,11 +23,11 @@ script:
     sequence:
       - variables:
           plan: >-
-            {% set s = states('vacuum.q5_pro') %}
-            {% if s in ['cleaning', 'paused', 'idle', 'error'] %}send_home
-            {% elif s == 'returning' %}already_returning
-            {% elif s == 'docked' %}already_docked
-            {% else %}offline{% endif %}
+            {%- set s = states('vacuum.q5_pro') -%}
+            {%- if s in ['cleaning', 'paused', 'idle', 'error'] -%}send_home
+            {%- elif s == 'returning' -%}already_returning
+            {%- elif s == 'docked' -%}already_docked
+            {%- else -%}offline{%- endif -%}
 
       - choose:
           - conditions: "{{ plan == 'send_home' }}"
@@ -89,11 +89,11 @@ script:
     sequence:
       - variables:
           plan: >-
-            {% set s = states('vacuum.q5_pro') %}
-            {% if s in ['docked', 'idle', 'paused', 'returning'] %}start
-            {% elif s == 'cleaning' %}already_cleaning
-            {% elif s == 'error' %}error
-            {% else %}offline{% endif %}
+            {%- set s = states('vacuum.q5_pro') -%}
+            {%- if s in ['docked', 'idle', 'paused', 'returning'] -%}start
+            {%- elif s == 'cleaning' -%}already_cleaning
+            {%- elif s == 'error' -%}error
+            {%- else -%}offline{%- endif -%}
 
       - choose:
           - conditions: "{{ plan == 'start' }}"

@@ -3,6 +3,14 @@ input_boolean:
     name: "Thermal Runaway Active"
     icon: mdi:alert-octagon
 
+  # Away hold: while on, sensor.hot_tub_expected_setpoint reports the hold
+  # temperature below instead of the TOU schedule, so the tub sits there until
+  # the hold is turned off. See hot_tub_hold.yaml. No `initial:` (same reason as
+  # the sliders below) so a hold survives restarts.
+  hot_tub_away_hold:
+    name: "Hot Tub Away Hold"
+    icon: mdi:airplane-clock
+
 # Seasonal setpoint sliders. sensor.hot_tub_expected_setpoint (templates.yaml)
 # reads these live, so adjusting a season is just dragging a slider -- no YAML
 # edit. min/max 80-104 enforce the firmware safety clamp (button_injector.h
@@ -29,3 +37,13 @@ input_number:
     step: 1
     unit_of_measurement: "°F"
     icon: mdi:thermometer-low
+
+  # Temperature the away hold targets. Intended value 90F; set once after the
+  # first deploy (a new input_number with no stored state starts at min, 80F).
+  hot_tub_hold_setpoint:
+    name: "Hot Tub Hold Setpoint"
+    min: 80
+    max: 104
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:airplane-clock

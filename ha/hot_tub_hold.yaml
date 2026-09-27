@@ -1,0 +1,143 @@
+# Hot Tub Away Hold -- "hold the tub at 90 while I'm away, until I turn it off"
+#
+# THE HOLD IS PART OF THE SCHEDULE, NOT THE OVERRIDE. While
+# input_boolean.hot_tub_away_hold is on, sensor.hot_tub_expected_setpoint
+# (templates.yaml) reports input_number.hot_tub_hold_setpoint instead of the TOU
+# value. So, with no other changes:
+#   - tou_automation.yaml applies it, and re-applies it after every WiFi drop,
+#     HA restart and ESP32 reconnect -- a week at -77 dBm is survivable.
+#   - tou_watchdog.yaml pages if the tub drifts off it, which is exactly when you
+#     want to hear about it (you are not there to notice).
+#   - thermal runaway still blocks setpoint changes.
+#   - a long press on the physical button "resumes the schedule", which during a
+#     hold means back to the hold temperature.
+# The manual override (hot_tub_button.yaml) was the wrong home for this: it
+# expires at the next TOU boundary by design.
+#
+# These scripts exist for Siri ("Run Script" in iOS Shortcuts) and for feedback.
+# Same shape as hot_tub_button.yaml: logic in hot_tub_hold_apply, thin wrappers.
+#
+# Two traps the apply script avoids:
+#   1. DOUBLE COMMAND. Flipping the hold usually changes the expected setpoint,
+#      which fires tou_automation. A second identical command from here would
+#      hit the known no-op bug (full retry ladder against zero presses, latches
+#      last_command_result = failed).
+#   2. NO COMMAND. If the hold temperature equals what the schedule already
+#      wants, the expected setpoint does not change and tou_automation never
+#      fires -- a tub left at 104 by an earlier override would stay at 104.
+# So it commands the setpoint itself only when the expected value did NOT change
+# and the tub is not already commanded there.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+script:
+  hot_tub_hold_apply:
+    alias: "Hot Tub Hold Apply"
+    icon: mdi:airplane-clock
+    mode: restart
+    fields:
+      hold:
+        name: Hold
+        description: "true = start the away hold, false = back to the schedule"
+        required: true
+        selector:
+          boolean:
+    sequence:
+      - variables:
+          expected_before: "{{ states('sensor.hot_tub_expected_setpoint') }}"
+          blocked: >-
+            {%- if is_state('input_boolean.thermal_runaway_active', 'on') -%}runaway
+            {%- elif not is_state('binary_sensor.tublemetry_hot_tub_api_status', 'on') -%}offline
+            {%- endif -%}
+
+      # Clear any button/Siri override first. With it off, hot_tub_override_expiry
+      # does not fire on the expected-setpoint change below, so it cannot push a
+      # misleading "schedule boundary reached" on top of this script's own push.
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.hot_tub_manual_override
+
+      - if: "{{ hold }}"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.hot_tub_away_hold
+        else:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.hot_tub_away_hold
+
+      # Let the expected-setpoint template re-render off the flag change.
+      - delay: "00:00:02"
+      - variables:
+          target: "{{ states('sensor.hot_tub_expected_setpoint') | int(0) }}"
+
+      # Trap 2 (see header). Variables render to native types, so both sides of
+      # the unchanged-check are coerced to int.
+      - if: >-
+          {{ blocked == ''
+             and states('sensor.hot_tub_expected_setpoint') | int(-1) == expected_before | int(-2)
+             and states('number.tublemetry_hot_tub_setpoint') | int(-1) != target
+             and 80 <= target <= 104 }}
+        then:
+          - action: number.set_value
+            target:
+              entity_id: number.tublemetry_hot_tub_setpoint
+            data:
+              value: "{{ target }}"
+
+      # Report reality, not intent. Completes at once when blocked (nothing will
+      # move) or when the panel is already there.
+      - wait_template: >-
+          {{ blocked != ''
+             or (is_state('sensor.tublemetry_hot_tub_injection_phase', 'idle')
+                 and states('sensor.tublemetry_hot_tub_detected_setpoint') | int(-1) == target) }}
+        timeout: "00:02:00"
+        continue_on_timeout: true
+
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: >-
+            {% set what = 'Hot tub hold ON' if hold else 'Hot tub hold OFF' %}
+            {% if blocked == 'runaway' %}{{ what }}, but setpoint changes are blocked
+            {%- elif blocked == 'offline' %}{{ what }}, tub offline
+            {%- elif wait.completed %}{{ what }}: {{ target }}F
+            {%- else %}{{ what }}, but the tub may not be at {{ target }}F{% endif %}
+          message: >-
+            {% if blocked == 'runaway' %}
+              Thermal runaway protection is active. The hold is
+              {{ 'on' if hold else 'off' }}, and the schedule will apply
+              {{ target }}F once protection clears.
+            {% elif blocked == 'offline' %}
+              The tub controller is offline. The hold is
+              {{ 'on' if hold else 'off' }}, and {{ target }}F will be applied
+              automatically when it reconnects.
+            {% elif wait.completed %}
+              {% if hold %}Holding at {{ target }}F until you turn the hold off.
+              {%- else %}Back on the TOU schedule at {{ target }}F.{% endif %}
+              Water {{ states('sensor.tublemetry_hot_tub_temperature') }}F.
+            {% else %}
+              Target {{ target }}F but the panel reads
+              {{ states('sensor.tublemetry_hot_tub_detected_setpoint') }}F after 2 min
+              (injection {{ states('sensor.tublemetry_hot_tub_injection_phase') }},
+              last result {{ states('sensor.tublemetry_hot_tub_last_command_result') }}).
+              The schedule will keep retrying on reconnects; check the panel.
+            {% endif %}
+
+  hot_tub_hold_on:
+    alias: "Hot Tub: Hold On"
+    icon: mdi:airplane-clock
+    mode: restart
+    sequence:
+      - action: script.hot_tub_hold_apply
+        data:
+          hold: true
+
+  hot_tub_hold_off:
+    alias: "Hot Tub: Hold Off"
+    icon: mdi:calendar-clock
+    mode: restart
+    sequence:
+      - action: script.hot_tub_hold_apply
+        data:
+          hold: false
