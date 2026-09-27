@@ -1,4 +1,4 @@
-# Roborock Q5 Pro -- "park the vacuum" for Siri
+# Roborock Q5 Pro -- Siri scripts: "park the vacuum" and "full clean"
 #
 # Run from an iOS Shortcut via the Companion app's "Run Script" action. Built as
 # a script rather than a Shortcut "Perform action" step because the latter
@@ -76,3 +76,70 @@ script:
               message: >-
                 The vacuum reads {{ states('vacuum.q5_pro') }}, so it could not be
                 sent home. Check the Roborock app.
+
+  # Start the "Full Cleaning" routine built in the Roborock app (exposed by the
+  # Roborock integration as a button), so rooms and suction are configured
+  # there, not duplicated here. Refuses while already cleaning or in error, and
+  # only claims "started" once the vacuum actually reports cleaning.
+  vacuum_full_clean:
+    alias: "Vacuum: Full Clean"
+    icon: mdi:robot-vacuum-variant
+    mode: single
+    max_exceeded: silent
+    sequence:
+      - variables:
+          plan: >-
+            {% set s = states('vacuum.q5_pro') %}
+            {% if s in ['docked', 'idle', 'paused', 'returning'] %}start
+            {% elif s == 'cleaning' %}already_cleaning
+            {% elif s == 'error' %}error
+            {% else %}offline{% endif %}
+
+      - choose:
+          - conditions: "{{ plan == 'start' }}"
+            sequence:
+              - action: button.press
+                target:
+                  entity_id: button.q5_pro_full_cleaning
+              - wait_template: "{{ is_state('vacuum.q5_pro', 'cleaning') }}"
+                timeout: "00:01:00"
+                continue_on_timeout: true
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: >-
+                    {% if wait.completed %}Vacuum cleaning started
+                    {%- else %}Vacuum may not have started{% endif %}
+                  message: >-
+                    {% if wait.completed %}
+                      Full Cleaning is running. Battery {{ states('sensor.q5_pro_battery') }}%.
+                    {% else %}
+                      Pressed Full Cleaning but it still reads {{ states('vacuum.q5_pro') }}
+                      after a minute (error: {{ states('sensor.q5_pro_vacuum_error') }}).
+                      Check the Roborock app.
+                    {% endif %}
+
+          - conditions: "{{ plan == 'already_cleaning' }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Vacuum already cleaning"
+                  message: >-
+                    It is already cleaning ({{ states('sensor.q5_pro_current_room') }}),
+                    so nothing was sent.
+
+          - conditions: "{{ plan == 'error' }}"
+            sequence:
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Vacuum needs attention"
+                  message: >-
+                    It is in an error state ({{ states('sensor.q5_pro_vacuum_error') }}),
+                    so cleaning was not started. Check the vacuum.
+
+        default:
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Vacuum not reachable"
+              message: >-
+                The vacuum reads {{ states('vacuum.q5_pro') }}, so cleaning could not
+                be started. Check the Roborock app.

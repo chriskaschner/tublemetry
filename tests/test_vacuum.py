@@ -121,3 +121,71 @@ def test_send_home_confirms_before_claiming_success(script):
     assert "returning" in wait["wait_template"] and "docked" in wait["wait_template"]
     assert wait["continue_on_timeout"] is True, "a timeout must still notify"
     assert "wait.completed" in str(steps[notify_i]["data"])
+
+
+# --- script.vacuum_full_clean -----------------------------------------------
+#
+# Presses the "Full Cleaning" routine the user built in the Roborock app, so the
+# rooms and suction settings live there, not here. Same contract as park: every
+# path pushes, and "started" is only claimed once the vacuum reports cleaning.
+
+FULL_CLEAN_BUTTON = "button.q5_pro_full_cleaning"
+
+
+@pytest.fixture
+def full_clean(pkg):
+    return pkg["script"]["vacuum_full_clean"]
+
+
+def test_full_clean_alias_is_what_shortcuts_lists(full_clean):
+    assert full_clean["alias"] == "Vacuum: Full Clean"
+
+
+@pytest.mark.parametrize("state", ["docked", "idle", "paused", "returning"])
+def test_full_clean_starts_from_any_resting_state(full_clean, state):
+    assert plan_for(full_clean, state) == "start"
+
+
+def test_full_clean_leaves_a_running_clean_alone(full_clean):
+    assert plan_for(full_clean, "cleaning") == "already_cleaning"
+
+
+def test_full_clean_does_not_start_while_in_error(full_clean):
+    # An error (stuck, brush jammed, bin out) needs a human; pressing the routine
+    # would just fail again or be ignored.
+    assert plan_for(full_clean, "error") == "error"
+
+
+@pytest.mark.parametrize("state", ["unavailable", "unknown"])
+def test_full_clean_reports_unreachable(full_clean, state):
+    assert plan_for(full_clean, state) == "offline"
+
+
+def test_full_clean_presses_the_roborock_routine(full_clean):
+    steps = _branch(full_clean, "start")
+    press = next(s for s in steps if s.get("action") == "button.press")
+    assert press["target"]["entity_id"] == FULL_CLEAN_BUTTON
+
+
+@pytest.mark.parametrize("plan", ["already_cleaning", "error"])
+def test_full_clean_sends_nothing_when_it_should_not_start(full_clean, plan):
+    acts = _actions(_branch(full_clean, plan))
+    assert not [a for a in acts if a.startswith(("vacuum.", "button."))]
+    assert "notify.mobile_app_chris_iphone" in acts
+
+
+def test_full_clean_offline_notifies_without_a_command(full_clean):
+    acts = _actions(_choose(full_clean)["default"])
+    assert not [a for a in acts if a.startswith(("vacuum.", "button."))]
+    assert "notify.mobile_app_chris_iphone" in acts
+
+
+def test_full_clean_confirms_before_claiming_it_started(full_clean):
+    steps = _branch(full_clean, "start")
+    names = [next(iter(s)) for s in steps]
+    wait = steps[names.index("wait_template")]
+    notify_i = next(i for i, s in enumerate(steps) if s.get("action", "").startswith("notify."))
+    assert names.index("wait_template") < notify_i
+    assert "cleaning" in wait["wait_template"]
+    assert wait["continue_on_timeout"] is True
+    assert "wait.completed" in str(steps[notify_i]["data"])
