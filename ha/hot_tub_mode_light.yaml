@@ -1,0 +1,169 @@
+# Hot Tub mode indicator -- ThirdReality Zigbee Nightlight (ZHA), light.nightlight
+#
+# Paired 2026-09-21. The device also exposes a motion sensor
+# (binary_sensor.nightlight_motion, unused) and its own ambient-light sensor
+# (sensor.nightlight_illuminance, lx) -- the latter IS used, for the day/night
+# brightness split below. supported_color_modes on light.nightlight are
+# color_temp and xy (checked on the live entity after pairing, not assumed),
+# so full RGB is available via the standard rgb_color service data even though
+# the device reports xy natively -- HA does the conversion.
+#
+# WHAT "HEAT" / "COLD" MEANS HERE (decided 2026-09-21)
+# -----------------------------------------------------
+# This mirrors the TOU schedule TIER (Max vs Coast -- the same distinction as
+# the "Set to Hot" / "Set to Cold" dashboard buttons in hot_tub_button.yaml),
+# NOT binary_sensor.tublemetry_hot_tub_heater. The heater relay cycles on/off
+# to hold temperature in BOTH tiers, so wiring the light to it directly would
+# flicker constantly instead of showing a stable mode.
+#
+# The tier is read off number.tublemetry_hot_tub_setpoint (what was actually
+# COMMANDED), not sensor.hot_tub_expected_setpoint (what the schedule wants).
+# Using the commanded value means a button press or nudge updates the light
+# immediately, and it stays correct during a manual override, when the two can
+# disagree. The classification is "above or below the midpoint of the two
+# seasonal sliders" rather than an exact match against Max, so the evening
+# preheat tier (max - 2, see templates.yaml) still reads as "heat", which
+# matches what it actually is.
+#
+# sensor.hot_tub_mode is a plain string sensor (heat / cold / offline) rather
+# than a binary_sensor so the dashboard can show it directly. "offline" -- not
+# "unknown" -- is deliberate: HA already overloads unknown/unavailable for
+# "no data", and a color that quietly goes stale would be worse than one that
+# visibly turns off. The light goes off, not to a leftover color, whenever the
+# tub controller is unreachable or a setpoint/slider value is missing.
+#
+# DAY / NIGHT BRIGHTNESS (added 2026-09-22)
+# ------------------------------------------
+# "Low light = night, so run dim; otherwise run brighter" is read off the
+# device's OWN illuminance sensor rather than sun.sun or a time schedule --
+# the light already measures the ambient brightness right where it sits, which
+# is a better proxy for "is this room dark right now" than the sun's position
+# would be (curtains, indoor lighting, etc).
+#
+# BRIGHTNESS AND THE THRESHOLD ARE SET VIA THE SLIDERS BELOW, NOT THE HA
+# DASHBOARD BRIGHTNESS SLIDER ON THE LIGHT ITSELF. The automation re-asserts
+# brightness_pct on every trigger (a tier change, a day/night flip, or an HA
+# restart), so a manual change made on the LIGHT's own slider holds only until
+# one of those next fires, then silently reverts -- which is exactly the
+# "fiddling with sliders didn't work" symptom observed 2026-09-22. The three
+# input_number sliders below (day %, night %, day/night threshold in lx) are
+# what the automation actually reads, so they are the ones that stick.
+#
+# No `initial:` on any of the three, for the same reason as the seasonal
+# setpoint sliders in helpers.yaml: `initial` re-applies on every restart,
+# which would wipe a tuned value on every future package deploy (the Git Pull
+# add-on restarts HA after every successful sync). Day/night brightness come
+# up at their slider minimum (1%) until set once; the threshold's minimum
+# (20 lx) is a reasonable working default on its own, not just a floor.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+input_number:
+  hot_tub_nightlight_day_brightness:
+    name: "Nightlight Day Brightness"
+    min: 1
+    max: 100
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:brightness-6
+
+  hot_tub_nightlight_night_brightness:
+    name: "Nightlight Night Brightness"
+    min: 1
+    max: 100
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:brightness-3
+
+  hot_tub_nightlight_day_threshold:
+    name: "Nightlight Day/Night Threshold"
+    min: 20
+    max: 200
+    step: 5
+    unit_of_measurement: "lx"
+    icon: mdi:brightness-5
+
+template:
+  - sensor:
+      - name: "Hot Tub Mode"
+        unique_id: hot_tub_mode
+        icon: mdi:thermometer-auto
+        state: >-
+          {% set unavail = ['unknown', 'unavailable'] %}
+          {% set api_ok = is_state('binary_sensor.tublemetry_hot_tub_api_status', 'on') %}
+          {% set target = states('number.tublemetry_hot_tub_setpoint') %}
+          {% set maxsp = states('input_number.hot_tub_max_setpoint') %}
+          {% set coast = states('input_number.hot_tub_coast_setpoint') %}
+          {% if not api_ok or target in unavail or maxsp in unavail or coast in unavail %}
+          offline
+          {% else %}
+          {% set mid = (maxsp | float + coast | float) / 2 %}
+          {{ 'heat' if target | float >= mid else 'cold' }}
+          {% endif %}
+
+      # Picks day% or night% off the sliders above based on the device's own
+      # illuminance reading. Falls back to the (dimmer, less obtrusive) night
+      # value whenever the illuminance reading itself is unavailable, rather
+      # than defaulting to the brighter one.
+      - name: "Hot Tub Nightlight Brightness"
+        unique_id: hot_tub_nightlight_brightness
+        unit_of_measurement: "%"
+        icon: mdi:brightness-auto
+        state: >-
+          {% set unavail = ['unknown', 'unavailable'] %}
+          {% set lux = states('sensor.nightlight_illuminance') %}
+          {% set day_b = states('input_number.hot_tub_nightlight_day_brightness') | float(1) %}
+          {% set night_b = states('input_number.hot_tub_nightlight_night_brightness') | float(1) %}
+          {% set threshold = states('input_number.hot_tub_nightlight_day_threshold') | float(20) %}
+          {{ day_b if (lux not in unavail and lux | float >= threshold) else night_b }}
+
+automation:
+  - id: hot_tub_mode_light
+    alias: Hot Tub Mode Light
+    description: >
+      Drives the Nightlight as an at-a-glance indicator of the hot tub's
+      current TOU tier: warm red for Max ("heat"), blue for Coast ("cold").
+      Brightness follows sensor.hot_tub_nightlight_brightness (day/night, see
+      the sliders above). Off whenever sensor.hot_tub_mode reports "offline",
+      so a stale reading is never shown as a real color.
+    mode: single
+
+    trigger:
+      - platform: state
+        entity_id: sensor.hot_tub_mode
+      - platform: state
+        entity_id: sensor.hot_tub_nightlight_brightness
+      # Re-apply after the light itself comes back (firmware update, Zigbee
+      # drop, power cycle) -- its physical color and brightness do not
+      # remember what was active while it was gone.
+      - platform: state
+        entity_id: light.nightlight
+        from: "unavailable"
+      - platform: homeassistant
+        event: start
+
+    action:
+      - variables:
+          mode: "{{ states('sensor.hot_tub_mode') }}"
+          brightness: "{{ states('sensor.hot_tub_nightlight_brightness') | float(1) }}"
+      - choose:
+          - conditions: "{{ mode == 'heat' }}"
+            sequence:
+              - action: light.turn_on
+                target:
+                  entity_id: light.nightlight
+                data:
+                  rgb_color: [255, 40, 0]
+                  brightness_pct: "{{ brightness | round(0) }}"
+          - conditions: "{{ mode == 'cold' }}"
+            sequence:
+              - action: light.turn_on
+                target:
+                  entity_id: light.nightlight
+                data:
+                  rgb_color: [20, 90, 255]
+                  brightness_pct: "{{ brightness | round(0) }}"
+        default:
+          - action: light.turn_off
+            target:
+              entity_id: light.nightlight

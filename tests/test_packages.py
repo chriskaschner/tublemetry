@@ -36,6 +36,7 @@ AUTOMATION_FILES = [
     "hot_tub_button.yaml",
     "ac_vent_monitor.yaml",
     "fridge_door.yaml",
+    "hot_tub_mode_light.yaml",
     # deconz_watchdog.yaml was DELETED 2026-09-11 with the ConBee II. Its one
     # still-useful idea (a witness that tells a dead device apart from a dead
     # gateway) moved to zigbee_health.yaml; the rest of it existed only to
