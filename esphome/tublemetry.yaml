@@ -121,9 +121,15 @@ sensor:
       entity_category: "diagnostic"
     temperature:
       name: "Hot Tub Temperature"
+      # No delta filter: ESPHome's delta is strictly-greater and the panel shows
+      # whole degrees, so `delta: 1.0` discarded every real 1F step. The
+      # component already publishes each qualified value once (water_temp_gate.h).
+      # optimistic passes changes through immediately; the 30s re-send is for
+      # liveness only.
       filters:
-        - heartbeat: 30s
-        - delta: 1.0
+        - heartbeat:
+            period: 30s
+            optimistic: true
     detected_setpoint:
       name: "Hot Tub Detected Setpoint"
     retry_count:

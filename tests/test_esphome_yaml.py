@@ -374,6 +374,26 @@ class TestTemperatureSensorConfig:
             "Temperature sensor should not have entity_category (it is a primary user-visible entity)"
         )
 
+    def test_temperature_sensor_has_no_delta_filter(self, yaml_config):
+        # ESPHome's delta filter is strictly-greater, and the panel shows whole
+        # degrees, so `delta: 1.0` discarded every real 1F step (2026-09-27).
+        # Rate limiting lives in water_temp_gate.h (publish on change only).
+        entry = self._get_tublemetry_sensor_entry(yaml_config)
+        filters = entry["temperature"].get("filters", [])
+        assert not any("delta" in f for f in filters), filters
+
+    def test_temperature_heartbeat_is_optimistic(self, yaml_config):
+        # A plain heartbeat holds every value until its next 30s tick. That is
+        # how a leaked setpoint flash was re-sent for a whole set-mode window.
+        # optimistic passes each gated change through immediately and keeps the
+        # 30s re-send for liveness.
+        entry = self._get_tublemetry_sensor_entry(yaml_config)
+        filters = entry["temperature"].get("filters", [])
+        hb = [f["heartbeat"] for f in filters if "heartbeat" in f]
+        assert len(hb) == 1, filters
+        assert isinstance(hb[0], dict) and hb[0].get("optimistic") is True, hb[0]
+        assert hb[0].get("period") == "30s", hb[0]
+
 
 class TestNumberEntityConfig:
     """Validate number entity configuration in tublemetry.yaml."""

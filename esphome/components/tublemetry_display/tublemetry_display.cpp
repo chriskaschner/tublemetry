@@ -369,14 +369,18 @@ void TublemetryDisplay::classify_display_state_(const std::string &display_str) 
     }
 
     if (this->in_set_mode_) {
-      // Setpoint flash — record candidate, suppress temperature sensor publish
+      // Setpoint flash — record candidate for detected_setpoint_sensor_
       this->set_temp_potential_ = temp;
-      ESP_LOGD(TAG, "Set mode candidate: %.0fF (suppressing temperature publish)", temp);
-      // temperature_sensor_ publish is intentionally skipped here
-    } else {
-      // Normal temperature — publish to HA
+      ESP_LOGD(TAG, "Set mode candidate: %.0fF", temp);
+    }
+
+    // Water temperature is decided by duration, not by in_set_mode_: the first
+    // frame of a flash arrives before any blank. See water_temp_gate.h.
+    float water;
+    if (this->water_temp_gate_.feed_numeric(temp, millis(), &water)) {
+      ESP_LOGD(TAG, "Water temperature: %.0fF", water);
       if (this->temperature_sensor_ != nullptr) {
-        this->temperature_sensor_->publish_state(temp);
+        this->temperature_sensor_->publish_state(water);
       }
     }
   } else if (stripped == "OH") {
@@ -415,6 +419,10 @@ void TublemetryDisplay::classify_display_state_(const std::string &display_str) 
     this->set_temp_potential_ = NAN;
   } else {
     state = "unknown";
+  }
+
+  if (!is_numeric) {
+    this->water_temp_gate_.interrupt();
   }
 
   if (state != this->last_display_state_) {

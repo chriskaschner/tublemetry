@@ -7,6 +7,7 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "button_injector.h"
+#include "water_temp_gate.h"
 
 #include <string>
 
@@ -14,7 +15,7 @@ namespace esphome {
 namespace tublemetry_display {
 
 // Component version — update on each meaningful firmware change
-static const char *const TUBLEMETRY_VERSION = "0.2.0";
+static const char *const TUBLEMETRY_VERSION = "0.3.0";
 
 // 7-segment lookup table entry
 struct SegEntry {
@@ -120,6 +121,9 @@ class TublemetryDisplay : public Component {
   float detected_setpoint_{NAN};
   uint32_t last_setpoint_capture_ms_{0};  // millis() when setpoint was last confirmed
   sensor::Sensor *detected_setpoint_sensor_{nullptr};
+
+  // Decides which numeric frames are real water temperature (temperature_sensor_)
+  WaterTempGate water_temp_gate_;
 
   // Binary sensor pointers (optional — nullptr if not configured)
   binary_sensor::BinarySensor *heater_binary_sensor_{nullptr};
