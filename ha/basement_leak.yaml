@@ -1,0 +1,368 @@
+# Basement water leak alerting -- 2x SONOFF SNZB-05P via ZHA
+#
+# Paired 2026-09-29 and renamed to semantic ids at pairing time:
+#
+#   binary_sensor.gym_leak          -- gym, along the exterior wall
+#   binary_sensor.floor_drain_leak  -- next to the floor drain
+#
+# plus sensor.<name>_battery and (enabled) sensor.<name>_lqi / _rssi.
+# device_class is 'moisture': on = wet, off = dry. Checked on the live entities
+# and both wet-tested with a drop of water across the probes (gym 21:23:56,
+# drain 21:24:39), which also confirmed each name is on the right sensor.
+#
+# DECISIONS (user, 2026-09-29)
+# ----------------------------
+# - Ordinary pushes, NOT iOS critical alerts. Water in these spots is
+#   inconvenient rather than an emergency, so a false alarm must not break
+#   through silent mode or a Focus.
+# - A wet reading is TRUSTED even when it arrives straight from 'unavailable'.
+#   This is the deliberate opposite of fridge_door.yaml's `from: "off"` gate:
+#   that gate exists because the old deCONZ gateway repopulated entities as 'on'
+#   after dropouts. For a leak, a missed alert costs more than a spurious push,
+#   so the trigger has no `from:`.
+#
+# WHICH SENSOR FIRED FIRST (user requirement, 2026-09-29)
+# ------------------------------------------------------
+# The source of the water is unknown -- the exterior wall (gym sensor) or the
+# floor drain. The ORDER the sensors go wet, and the gap between them, is the
+# diagnostic. Recorder history has the raw timestamps but purges (10 days by
+# default) and does not compute order, so basement_leak_record_order writes
+# each episode to restart-safe helpers and the logbook:
+#
+#   input_text.basement_leak_first / _second   entity ids, in order
+#   input_datetime.basement_leak_episode_start  first wet time
+#   input_text.basement_leak_summary            one line, human readable
+#
+# An episode starts at the first wet edge; the other sensor going wet within
+# 24 h is recorded as second with the lead time. It runs `queued`, so two
+# sensors wet in the same second are processed in order instead of both
+# claiming to be first. Times come from the sensor's last_changed, not from
+# when the run happened to start.
+#
+# CAVEAT: a wet reading that arrives straight from 'unavailable' carries the
+# RECONNECT time, not the time the water arrived, so the order may be wrong for
+# that event. Such events are flagged "reported on reconnect" in the record.
+#
+# Behavior: one push per wet sensor, re-nag every 15 min while it stays wet
+# (4 pushes, ~45 min, then stop and leave a persistent notice), and a "dry"
+# confirmation when it clears. The two sensors alert independently.
+#
+# These sensors sit on the floor doing nothing for months, so the realistic
+# failure is SILENCE: a flat battery or a sensor that dropped off the mesh. Hence
+# the offline and low-battery alerts below. The offline alert only fires while
+# binary_sensor.zigbee_gateway_up is on -- a whole-mesh outage is
+# zigbee_health.yaml's to report, not this package's.
+#
+# Deploy: tublemetry-ha repo packages/ (Git-pull synced), like the other packages.
+
+input_text:
+  # No `initial:` -- it would wipe the recorded episode on every restart.
+  basement_leak_first:
+    name: "Basement Leak First Sensor"
+    max: 64
+    icon: mdi:numeric-1-circle-outline
+  basement_leak_second:
+    name: "Basement Leak Second Sensor"
+    max: 64
+    icon: mdi:numeric-2-circle-outline
+  basement_leak_summary:
+    name: "Basement Leak Last Episode"
+    max: 255
+    icon: mdi:water-alert-outline
+
+input_datetime:
+  basement_leak_episode_start:
+    name: "Basement Leak Episode Start"
+    has_date: true
+    has_time: true
+    icon: mdi:clock-alert-outline
+
+automation:
+  - id: basement_leak_detected
+    alias: Basement Leak Detected
+    description: >
+      Re-nags every 15 minutes while a basement leak sensor stays wet (capped)
+      and confirms when it dries. The first push is sent by
+      basement_leak_record_order.
+    # parallel: gym and drain wet at the same time must each get their own run.
+    # restart or single would swallow the second sensor's alert.
+    mode: parallel
+    max: 4
+
+    # No `from:` -- see DECISIONS in the header.
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.gym_leak
+          - binary_sensor.floor_drain_leak
+        to: "on"
+
+    # State triggers and state conditions do not render a templated entity_id,
+    # so everything below keys off this variable via is_state() templates.
+    variables:
+      sensor: "{{ trigger.entity_id }}"
+      location: >-
+        {{ {'binary_sensor.gym_leak': 'Gym (exterior wall)',
+            'binary_sensor.floor_drain_leak': 'Floor drain'}.get(sensor, sensor) }}
+      notice_id: "leak_{{ sensor.split('.')[1] }}"
+
+    action:
+      - action: persistent_notification.create
+        data:
+          title: "Water in the basement"
+          notification_id: "{{ notice_id }}"
+          message: "{{ location }} leak sensor is wet (since {{ now().strftime('%H:%M') }})."
+
+      # The FIRST push comes from basement_leak_record_order, because it carries
+      # which sensor fired first. This loop only sends the reminders: wait up
+      # to 15 min (waking immediately if it dries), then nag if still wet.
+      # 3 reminders + the first push = 4 pushes over ~45 min.
+      - repeat:
+          sequence:
+            - wait_template: "{{ is_state(sensor, 'off') }}"
+              timeout: "00:15:00"
+              continue_on_timeout: true
+            - if:
+                - condition: template
+                  value_template: "{{ is_state(sensor, 'on') }}"
+              then:
+                - action: notify.mobile_app_chris_iphone
+                  data:
+                    title: "Water in the basement"
+                    message: >-
+                      {{ location }} sensor still wet after about
+                      {{ repeat.index * 15 }} min.
+                    data:
+                      # Per sensor: repeat nags replace each other, but the gym
+                      # and drain alerts do not overwrite one another.
+                      tag: "leak_{{ sensor }}"
+          while:
+            - condition: template
+              value_template: "{{ is_state(sensor, 'on') }}"
+            - condition: template
+              value_template: "{{ repeat.index <= 3 }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ is_state(sensor, 'off') }}"
+        then:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ notice_id }}"
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Basement dry again"
+              message: "{{ location }} sensor reads dry."
+              data:
+                tag: "leak_{{ sensor }}"
+        else:
+          # Still wet after the reminders ran out, or the sensor went
+          # unavailable mid-leak. Stop pushing but keep it visible in the UI.
+          - action: persistent_notification.create
+            data:
+              title: "Water in the basement"
+              notification_id: "{{ notice_id }}"
+              message: >-
+                {{ location }} leak sensor has not read dry (currently
+                '{{ states(sensor) }}'). No further push reminders will be sent
+                for this episode -- go check it.
+
+  - id: basement_leak_record_order
+    alias: Basement Leak Record Order
+    description: >
+      Records which leak sensor went wet first and the lead time to the second,
+      and sends the first push for each wet edge with that ordering in it.
+    # queued: wet edges are handled strictly one at a time, so near-simultaneous
+    # edges cannot both see an empty episode and both claim to be first.
+    mode: queued
+    max: 10
+
+    # Identical to basement_leak_detected (pinned by a test), including the
+    # deliberate absence of `from:`.
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.gym_leak
+          - binary_sensor.floor_drain_leak
+        to: "on"
+
+    variables:
+      sensor: "{{ trigger.entity_id }}"
+      names:
+        binary_sensor.gym_leak: "Gym (exterior wall)"
+        binary_sensor.floor_drain_leak: "Floor drain"
+      location: "{{ names.get(sensor, sensor) }}"
+      # When the sensor changed, not when this (possibly queued) run started.
+      event_ts: "{{ as_timestamp(trigger.to_state.last_changed) }}"
+      event_time: "{{ event_ts | timestamp_custom('%Y-%m-%d %H:%M:%S') }}"
+      late: >-
+        {{ trigger.from_state is not none
+           and trigger.from_state.state == 'unavailable' }}
+      late_note: "{{ ' (reported on reconnect -- may have been wet earlier)' if late else '' }}"
+      start_ts: "{{ state_attr('input_datetime.basement_leak_episode_start', 'timestamp') | float(0) }}"
+      first: "{{ states('input_text.basement_leak_first') }}"
+      second: "{{ states('input_text.basement_leak_second') }}"
+      in_episode: >-
+        {{ start_ts > 0 and first in names
+           and (event_ts - start_ts) < 86400 }}
+      lead: "{{ (event_ts - start_ts) | int(0) }}"
+      lead_text: >-
+        {%- if lead >= 3600 -%}{{ lead // 3600 }}h {{ (lead % 3600) // 60 }}m
+        {%- else -%}{{ lead // 60 }}m {{ lead % 60 }}s{%- endif -%}
+
+    action:
+      - choose:
+          # First wet sensor of a new episode.
+          - conditions:
+              - condition: template
+                value_template: "{{ not in_episode }}"
+            sequence:
+              - action: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.basement_leak_episode_start
+                data:
+                  timestamp: "{{ event_ts }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.basement_leak_first
+                data:
+                  value: "{{ sensor }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.basement_leak_second
+                data:
+                  value: ""
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.basement_leak_summary
+                data:
+                  value: "{{ event_time }}: {{ location }} wet FIRST{{ late_note }}; other sensor still dry"
+              - action: logbook.log
+                data:
+                  name: "Basement leak"
+                  entity_id: "{{ sensor }}"
+                  message: "went wet FIRST at {{ event_time }}{{ late_note }}"
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Water in the basement"
+                  message: "{{ location }} sensor is wet -- first sensor to fire{{ late_note }}. The other is still dry."
+                  data:
+                    tag: "leak_{{ sensor }}"
+
+          # The other sensor, within 24 h of the first.
+          - conditions:
+              - condition: template
+                value_template: "{{ in_episode and sensor != first and second not in names }}"
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.basement_leak_second
+                data:
+                  value: "{{ sensor }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.basement_leak_summary
+                data:
+                  value: >-
+                    {{ start_ts | timestamp_custom('%Y-%m-%d %H:%M:%S') }}:
+                    {{ names.get(first, first) }} wet first, then {{ location }}
+                    {{ lead_text }} later{{ late_note }}
+              - action: logbook.log
+                data:
+                  name: "Basement leak"
+                  entity_id: "{{ sensor }}"
+                  message: >-
+                    went wet SECOND at {{ event_time }}, {{ lead_text }} after
+                    {{ names.get(first, first) }}{{ late_note }}
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Water in the basement"
+                  message: >-
+                    {{ location }} sensor is now wet too -- {{ lead_text }} after
+                    {{ names.get(first, first) }}{{ late_note }}.
+                  data:
+                    tag: "leak_{{ sensor }}"
+
+        # A sensor already recorded in this episode went wet again. The order
+        # is already settled; just alert.
+        default:
+          - action: logbook.log
+            data:
+              name: "Basement leak"
+              entity_id: "{{ sensor }}"
+              message: "wet again at {{ event_time }}{{ late_note }}"
+          - action: notify.mobile_app_chris_iphone
+            data:
+              title: "Water in the basement"
+              message: "{{ location }} sensor is wet again{{ late_note }}."
+              data:
+                tag: "leak_{{ sensor }}"
+
+  - id: basement_leak_sensor_offline
+    alias: Basement Leak Sensor Offline
+    description: >
+      A leak sensor has been unavailable for an hour while the rest of the
+      Zigbee mesh is fine -- most likely a dead battery or lost route.
+    mode: parallel
+    # ZHA already waits for missed check-ins before marking a battery device
+    # unavailable, so 'unavailable' is itself a slow signal; the extra hour just
+    # rides out a brief blip such as a ZHA reload.
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.gym_leak
+          - binary_sensor.floor_drain_leak
+        to: "unavailable"
+        for:
+          hours: 1
+    condition:
+      - condition: state
+        entity_id: binary_sensor.zigbee_gateway_up
+        state: "on"
+    action:
+      - action: persistent_notification.create
+        data:
+          title: "Leak sensor offline"
+          notification_id: "leak_offline_{{ trigger.entity_id.split('.')[1] }}"
+          message: >-
+            {{ trigger.to_state.name }} has been unavailable for over an hour, so
+            it cannot report water. Check its battery and that it is still in
+            range.
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "Leak sensor offline"
+          message: >-
+            {{ trigger.to_state.name }} has been unavailable for an hour and
+            cannot report water.
+
+  - id: basement_leak_sensor_back
+    alias: Basement Leak Sensor Back
+    mode: parallel
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.gym_leak
+          - binary_sensor.floor_drain_leak
+        from: "unavailable"
+    action:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "leak_offline_{{ trigger.entity_id.split('.')[1] }}"
+
+  - id: basement_leak_battery_low
+    alias: Basement Leak Sensor Battery Low
+    description: Pushes once when a leak sensor's battery drops below 20%.
+    mode: parallel
+    trigger:
+      - platform: numeric_state
+        entity_id:
+          - sensor.gym_leak_battery
+          - sensor.floor_drain_leak_battery
+        below: 20
+    action:
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "Leak sensor battery low"
+          message: >-
+            {{ trigger.to_state.name }} is at {{ trigger.to_state.state | int }}%.
+            Replace the battery before it goes silent.

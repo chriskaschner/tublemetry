@@ -252,3 +252,36 @@ cards:
     name: Day/Night Threshold (lx)
     features:
       - type: numeric-input
+
+---
+# Card 14: Basement leak sensors (ha/basement_leak.yaml).
+# Two SNZB-05P on the basement floor. The point of this card is ORDER: which
+# sensor went wet first, and how long before the other, to tell whether water
+# comes in at the exterior wall or up from the drain. The markdown line reads
+# the episode record kept by automation.basement_leak_record_order; the
+# timeline shows the raw wet/dry edges for as long as the recorder keeps them.
+type: vertical-stack
+cards:
+  - type: entities
+    title: Basement Leak
+    entities:
+      - entity: binary_sensor.gym_leak
+        name: Gym (exterior wall)
+      - entity: binary_sensor.floor_drain_leak
+        name: Floor drain
+      - entity: sensor.gym_leak_battery
+        name: Gym battery
+      - entity: sensor.floor_drain_leak_battery
+        name: Floor drain battery
+  - type: markdown
+    content: >-
+      {% set s = states('input_text.basement_leak_summary') %}
+      **Last episode:** {{ s if s not in ['', 'unknown', 'unavailable'] else 'none recorded' }}
+  - type: history-graph
+    title: Wet / dry timeline (7 days)
+    hours_to_show: 168
+    entities:
+      - entity: binary_sensor.gym_leak
+        name: Gym (exterior wall)
+      - entity: binary_sensor.floor_drain_leak
+        name: Floor drain

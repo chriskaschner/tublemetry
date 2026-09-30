@@ -115,14 +115,14 @@ automation:
             All Zigbee devices have been unavailable for 15 minutes, so this is
             the coordinator rather than one device.
 
-            Fridge door alerting and the AC supply-air watchdog are both blind
-            while this persists.
+            Fridge door alerting, the AC supply-air watchdog and the basement
+            leak sensors are all blind while this persists.
       - action: notify.mobile_app_chris_iphone
         data:
           title: "Zigbee gateway down"
           message: >-
-            All Zigbee devices unavailable for 15 min -- fridge and AC vent
-            monitoring are offline. Check ZHA.
+            All Zigbee devices unavailable for 15 min -- fridge, AC vent and
+            basement leak monitoring are offline. Check ZHA.
 
   - id: zigbee_gateway_recovered
     alias: Zigbee Gateway Recovered

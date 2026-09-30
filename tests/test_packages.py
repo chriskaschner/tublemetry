@@ -42,6 +42,7 @@ AUTOMATION_FILES = [
     # gateway) moved to zigbee_health.yaml; the rest of it existed only to
     # restart an add-on that no longer exists.
     "zigbee_health.yaml",
+    "basement_leak.yaml",
 ]
 
 # Files that are intentionally comment-only (deprecated / superseded).
