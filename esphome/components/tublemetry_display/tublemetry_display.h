@@ -8,6 +8,7 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "button_injector.h"
 #include "water_temp_gate.h"
+#include "frame_decode.h"
 
 #include <string>
 
@@ -15,15 +16,9 @@ namespace esphome {
 namespace tublemetry_display {
 
 // Component version — update on each meaningful firmware change
-static const char *const TUBLEMETRY_VERSION = "0.3.0";
+static const char *const TUBLEMETRY_VERSION = "0.3.1";
 
-// 7-segment lookup table entry
-struct SegEntry {
-  uint8_t segments;  // 7-bit value (dp masked off)
-  char character;    // decoded character
-};
-
-// Frame constants
+// Frame constants (SegEntry and the 7-segment table live in frame_decode.h)
 static const uint8_t BITS_PER_FRAME = 24;
 static const uint8_t DIGITS_PER_FRAME = 3;
 static const uint8_t BITS_PER_DIGIT = 7;
@@ -136,7 +131,6 @@ class TublemetryDisplay : public Component {
 
   // Internal methods
   void process_frame_(uint32_t frame_bits);
-  char decode_7seg_(uint8_t byte_val);
   void classify_display_state_(const std::string &display_str);
   void publish_timestamp_();
 };

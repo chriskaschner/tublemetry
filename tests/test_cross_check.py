@@ -12,18 +12,19 @@ from pathlib import Path
 
 from tublemetry.decode import SEVEN_SEG_TABLE
 
-# Path to the C++ implementation file
+# Path to the C++ file holding SEVEN_SEG_TABLE (moved out of
+# tublemetry_display.cpp on 2026-11-06 so it can be compiled on the host)
 CPP_FILE = (
     Path(__file__).parent.parent
     / "esphome"
     / "components"
     / "tublemetry_display"
-    / "tublemetry_display.cpp"
+    / "frame_decode.h"
 )
 
 
 def parse_cpp_table() -> dict[int, str]:
-    """Parse the C++ SEVEN_SEG_TABLE from tublemetry_display.cpp.
+    """Parse the C++ SEVEN_SEG_TABLE from frame_decode.h.
 
     Extracts entries between SEVEN_SEG_TABLE_START and SEVEN_SEG_TABLE_END
     markers. Each entry is expected in the format:

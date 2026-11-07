@@ -11,43 +11,7 @@ namespace tublemetry_display {
 
 static const char *const TAG = "tublemetry_display";
 
-// 7-segment lookup table.
-// Ported from Python src/tublemetry/decode.py SEVEN_SEG_TABLE.
-// Segment mapping: bit6=a, bit5=b, bit4=c, bit3=d, bit2=e, bit1=f, bit0=g
-// Values are masked to 7 bits (dp bit 7 stripped before lookup).
-//
-// Format: {hex_value, 'character'}, // status
-// Cross-check test (tests/test_cross_check.py) parses this table to verify
-// it matches the Python reference.
-//
-// SEVEN_SEG_TABLE_START
-static const SegEntry SEVEN_SEG_TABLE[] = {
-    {0x7E, '0'},  // confirmed (ladder capture 2026-03-20)
-    {0x30, '1'},  // confirmed (ladder capture 2026-03-20)
-    {0x34, '1'},  // confirmed (setpoint display mode — "1" with lower-left foot segment e)
-    {0x6D, '2'},  // confirmed (ladder capture 2026-03-20)
-    {0x79, '3'},  // confirmed (ladder capture 2026-03-20)
-    {0x33, '4'},  // confirmed (ladder capture 2026-03-20)
-    {0x5B, '5'},  // confirmed (ladder capture 2026-03-20)
-    {0x5F, '6'},  // confirmed (ladder capture 2026-03-20)
-    {0x70, '7'},  // confirmed (ladder capture 2026-03-20)
-    {0x7F, '8'},  // confirmed (ladder capture 2026-03-20)
-    {0x73, '9'},  // confirmed (ladder capture 2026-03-20) -- NOT 0x7B, no bottom segment
-    {0x00, ' '},  // confirmed (blank)
-    {0x37, 'H'},  // confirmed (OH.csv decode)
-    {0x0E, 'L'},  // confirmed (SL mode capture 2026-03-20)
-    {0x4F, 'E'},  // confirmed (Ec mode capture 2026-03-20)
-    {0x0D, 'c'},  // confirmed (Ec mode capture 2026-03-20)
-    {0x0F, 't'},  // confirmed (St mode capture 2026-03-20)
-    {0x67, 'P'},  // unverified (GS510SZ reference)
-    {0x01, '-'},  // unverified (GS510SZ reference)
-    {0x03, '-'},  // unverified (alternate dash encoding)
-    {0x05, 'r'},  // unverified (GS510SZ reference)
-    {0x1D, 'o'},  // unverified (GS510SZ reference)
-};
-// SEVEN_SEG_TABLE_END
-
-static const size_t SEVEN_SEG_TABLE_SIZE = sizeof(SEVEN_SEG_TABLE) / sizeof(SEVEN_SEG_TABLE[0]);
+// The 7-segment table and frame decoding live in frame_decode.h (host-testable).
 
 // Frame gap threshold in microseconds.
 // At 60Hz, frames are 16.7ms apart. Clock pulses within a frame are ~37us apart.
@@ -109,21 +73,6 @@ void IRAM_ATTR TublemetryDisplay::clock_isr_() {
   }
 }
 
-/// Decode a 7-segment byte value to its character.
-/// Masks off bit 7 (decimal point) before lookup.
-/// Returns '?' for unknown byte patterns.
-char TublemetryDisplay::decode_7seg_(uint8_t byte_val) {
-  uint8_t segments = byte_val & 0x7F;  // mask off dp (bit 7)
-
-  for (size_t i = 0; i < SEVEN_SEG_TABLE_SIZE; i++) {
-    if (SEVEN_SEG_TABLE[i].segments == segments) {
-      return SEVEN_SEG_TABLE[i].character;
-    }
-  }
-
-  ESP_LOGV(TAG, "Unknown 7-segment byte: 0x%02X (masked: 0x%02X)", byte_val, segments);
-  return '?';
-}
 
 // --- TublemetryDisplay (main component) ---
 
@@ -194,30 +143,21 @@ float TublemetryDisplay::get_setup_priority() const {
 
 /// Process a complete 24-bit frame: extract 3 digits and 3 status bits.
 void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
-  // Extract 3 x 7-bit digits (MSB-first from bit 23 down)
-  // Frame layout: [digit1:7][digit2:7][digit3:7][status:3]
-  uint8_t digit_bytes[DIGITS_PER_FRAME];
-  digit_bytes[0] = (frame_bits >> 17) & 0x7F;  // bits 23-17
-  digit_bytes[1] = (frame_bits >> 10) & 0x7F;  // bits 16-10
-  digit_bytes[2] = (frame_bits >> 3) & 0x7F;   // bits 9-3
-  uint8_t status = frame_bits & 0x07;           // bits 2-0 (p4)
+  // Digits, checksum and status bits are decoded by frame_decode.h, which
+  // strips the heater flag out of digit 1 (see the comment there).
+  const DecodedFrame frame = decode_frame(frame_bits);
+  const uint8_t *digit_bytes = frame.raw;
 
   // Checksum gate — p1 bits 6,3,1,0 must be zero in valid frames;
   // p4 bit 0 must also be zero.
-  {
-    uint8_t p1 = digit_bytes[0];
-    static constexpr uint8_t CHECKSUM_MASK = 0x4B;  // bits 6,3,1,0
-    if ((p1 & CHECKSUM_MASK) != 0x00 || (status & 0x01) != 0x00) {
-      ESP_LOGW(TAG, "Frame checksum failed (p1=0x%02X p4=0x%X), dropping", p1, status);
-      return;
-    }
+  if (!frame.checksum_ok) {
+    ESP_LOGW(TAG, "Frame checksum failed (p1=0x%02X p4=0x%X), dropping", digit_bytes[0],
+             (unsigned) (frame_bits & 0x07));
+    return;
   }
 
-  // Decode each digit
   char decoded[DIGITS_PER_FRAME + 1];
-  for (int i = 0; i < DIGITS_PER_FRAME; i++) {
-    decoded[i] = this->decode_7seg_(digit_bytes[i]);
-  }
+  for (int i = 0; i < DIGITS_PER_FRAME; i++) decoded[i] = frame.chars[i];
   decoded[DIGITS_PER_FRAME] = '\0';
 
   std::string display_str(decoded, DIGITS_PER_FRAME);
@@ -237,11 +177,7 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
   }
 
   // Calculate decode confidence (percentage of known characters)
-  int known_count = 0;
-  for (int i = 0; i < DIGITS_PER_FRAME; i++) {
-    if (decoded[i] != '?')
-      known_count++;
-  }
+  const int known_count = frame.known;
   float confidence = (static_cast<float>(known_count) / DIGITS_PER_FRAME) * 100.0f;
 
   // Drop partial frames — transitional display states are not actionable
@@ -301,12 +237,10 @@ void TublemetryDisplay::process_frame_(uint32_t frame_bits) {
   // Classify display state (temperature, economy, sleep, etc.)
   this->classify_display_state_(display_str);
 
-  // Status bit extraction — heater/pump/light
-  // p1_full re-extracts digit_bytes[0] because the checksum scoped block's p1 is out of scope.
-  uint8_t p1_full = (frame_bits >> 17) & 0x7F;
-  bool heater_on = (p1_full >> 2) & 0x01;   // p1 bit 2
-  bool pump_on   = (status >> 2) & 0x01;    // p4 bit 2
-  bool light_on  = (status >> 1) & 0x01;    // p4 bit 1
+  // Status bits — heater/pump/light (decoded in frame_decode.h)
+  const bool heater_on = frame.heater;
+  const bool pump_on = frame.pump;
+  const bool light_on = frame.light;
   if (static_cast<int8_t>(heater_on) != this->last_heater_) {
     this->last_heater_ = static_cast<int8_t>(heater_on);
     if (this->heater_binary_sensor_ != nullptr) this->heater_binary_sensor_->publish_state(heater_on);
