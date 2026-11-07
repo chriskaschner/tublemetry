@@ -1,6 +1,15 @@
 # Thermal model sensors for hot tub preheat scheduling.
 # Computes heating rate and cooling rate from recorder history,
 # then derives preheat time estimates.
+#
+# 2026-11-07: these SQL sensors had never loaded. Each entry carried
+# `scan_interval`, which the SQL integration's YAML schema rejects, and one bad
+# key fails the WHOLE `sql:` setup ("Invalid config for 'sql' ... 'scan_interval'
+# is an invalid option"). Only schema keys are allowed here; see
+# tests/test_thermal_model.py. Without scan_interval the integration polls every
+# 30 s; the queries are index lookups on states(metadata_id, last_updated_ts),
+# and the 03:00 automation below still snapshots the daily values.
+# No db_url: the integration then reuses the recorder's own database/engine.
 
 sql:
 
@@ -8,8 +17,7 @@ sql:
   # Logic: find setpoint-raise events, measure time for water to follow,
   #        compute deg/min per event, weight by recency (1/days_ago).
   - name: "Hot Tub Heating Rate"
-    db_url: sqlite:////config/home-assistant_v2.db
-    scan_interval: 3600  # refresh hourly; automation below also triggers on demand
+    unique_id: hot_tub_heating_rate
     query: >
       WITH
       sp_meta AS (
@@ -72,8 +80,7 @@ sql:
   # Logic: find heater-off windows >= 2h, measure temp drop start->end,
   #        compute deg/hr, weight by recency.
   - name: "Hot Tub Cooling Rate"
-    db_url: sqlite:////config/home-assistant_v2.db
-    scan_interval: 3600
+    unique_id: hot_tub_cooling_rate
     query: >
       WITH
       wt_meta AS (
