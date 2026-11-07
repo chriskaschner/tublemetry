@@ -212,3 +212,41 @@ def test_age_days():
 def test_repo_component_version_matches_header():
     # The script reads the same literal the firmware publishes.
     assert d.repo_component_version() == "0.3.1"
+
+
+# --------------------------------------------------------------------------- #
+# Automation inventory knows every automation defined in ha/ (2026-11-06: it
+# flagged 16 real repo automations -- basement leak, fridge door, ... -- as
+# "removal candidates" because the canonical set was hand-maintained).
+# --------------------------------------------------------------------------- #
+def test_repo_automation_aliases_read_from_ha_packages():
+    aliases = d.repo_automation_aliases()
+    assert "Hot Tub TOU Watchdog" in aliases
+    assert "Basement Leak Detected" in aliases
+    assert "Hot Tub Heat Start Guard" in aliases
+    assert "Hot Tub Panel Mode Alert" in aliases
+
+
+def test_repo_defined_automation_is_not_lingering():
+    states = healthy_states()
+    states["automation.basement_leak_detected"] = st("on", friendly_name="Basement Leak Detected")
+    report = d.diagnose(states, now=NOW, repo_version="0.2.0")
+    assert status_of(report, "inventory") == d.PASS
+
+
+# --------------------------------------------------------------------------- #
+# History window (2026-11-06: HA's /api/history/period returns ONE day after
+# the start unless end_time is given, so "last 7 days" only ever showed day 1;
+# and an unencoded "+00:00" reaches HA as " 00:00").
+# --------------------------------------------------------------------------- #
+def test_history_path_spans_the_whole_window():
+    path = d.history_path("number.tublemetry_hot_tub_setpoint", days=7, now=NOW)
+    assert "end_time=" in path
+    assert "filter_entity_id=number.tublemetry_hot_tub_setpoint" in path
+    assert "minimal_response" in path
+
+
+def test_history_path_encodes_timezone_offsets():
+    path = d.history_path("number.x", days=7, now=NOW)
+    assert "+" not in path, "a bare '+' in the query decodes as a space"
+    assert "%2B00%3A00" in path or "%2B00:00" in path

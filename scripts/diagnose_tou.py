@@ -37,6 +37,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -165,6 +166,25 @@ def _age(iso: str | None, now: datetime) -> str:
     return f" ({secs / 86400:.1f} days ago)"
 
 
+HA_DIR = REPO_ROOT / "ha"
+_ALIAS_RE = re.compile(r"^\s*(?:-\s*)?alias:\s*[\"']?(.+?)[\"']?\s*$", re.MULTILINE)
+
+
+def repo_automation_aliases() -> set[str]:
+    """Every alias defined in ha/*.yaml, so anything the repo deploys counts as
+    known. (Script aliases are picked up too; harmless, they are not automations.)
+
+    Regex rather than PyYAML so the script keeps zero runtime dependencies.
+    """
+    aliases: set[str] = set()
+    for path in sorted(HA_DIR.glob("*.yaml")):
+        try:
+            aliases.update(m.strip() for m in _ALIAS_RE.findall(path.read_text()))
+        except OSError:
+            continue
+    return aliases
+
+
 def repo_component_version() -> str | None:
     """Read TUBLEMETRY_VERSION from the component header at repo HEAD."""
     try:
@@ -277,7 +297,7 @@ def diagnose(
         for e, s in states.items()
         if e.startswith("automation.")
     }
-    known = CANONICAL_CORE | NEW_AUTOMATIONS
+    known = CANONICAL_CORE | NEW_AUTOMATIONS | repo_automation_aliases()
     lingering = {e: n for e, n in autos.items() if n not in known}
     if lingering:
         lines = "; ".join(f"{n} ({e})" for e, n in sorted(lingering.items(), key=lambda kv: kv[1]))
@@ -303,6 +323,21 @@ def diagnose(
 # --------------------------------------------------------------------------- #
 # Thin HA REST client (I/O)
 # --------------------------------------------------------------------------- #
+def history_path(entity_id: str, days: int, now: datetime | None = None) -> str:
+    """REST path for `days` of history ending now.
+
+    end_time is required: without it HA returns only ONE day after the start, so
+    a 7-day request silently showed day 1. Timestamps are percent-encoded because
+    a bare '+' in "+00:00" decodes as a space.
+    """
+    end = now or datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    q = urllib.parse.quote
+    return (f"/api/history/period/{q(start.isoformat(), safe='')}"
+            f"?end_time={q(end.isoformat(), safe='')}"
+            f"&filter_entity_id={entity_id}&minimal_response")
+
+
 class HA:
     def __init__(self, base_url: str, token: str):
         self.base = base_url.rstrip("/")
@@ -325,10 +360,7 @@ class HA:
         return self._req("/api/services")
 
     def history(self, entity_id: str, days: int) -> list:
-        # entity ids are URL-safe (letters, digits, '.', '_'); no quoting needed.
-        start = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        path = f"/api/history/period/{start}?filter_entity_id={entity_id}&minimal_response"
-        data = self._req(path)
+        data = self._req(history_path(entity_id, days))
         return data[0] if data else []
 
     def automation_source(self, config_id: str) -> str:
