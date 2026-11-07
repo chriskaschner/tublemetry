@@ -114,12 +114,13 @@ def _run(con, pkg, name: str):
 
 def test_heating_rate_from_a_real_shaped_heat_up(db, pkg):
     # 2026-11-07 05:00: raise 90 -> 104 with water at 97, ~7.5 min/F, reaching
-    # 103 (target - 1) after 45 min. Expected rate (104 - 97) / 45 = 0.1556 F/min.
+    # 103 (target - 1) after 45 min. The query measures the time to target - 1,
+    # so the degrees it measured are 103 - 97 = 6: 6 / 45 = 0.1333 F/min.
     t0 = time.time() - 6 * 3600
     _put(db, SETPOINT, [(t0 - 3600, "90.0"), (t0, "104.0")])
     _put(db, WATER, [(t0 - 600, "97.0")] + [(t0 + m * 60, f"{v}.0")
                                           for m, v in ((8, 98), (15, 99), (23, 100), (30, 101), (38, 102), (45, 103))])
-    assert _run(db, pkg, "Hot Tub Heating Rate") == pytest.approx(0.1556, abs=0.001)
+    assert _run(db, pkg, "Hot Tub Heating Rate") == pytest.approx(0.1333, abs=0.001)
 
 
 def test_heating_rate_ignores_drops_and_unreached_raises(db, pkg):
@@ -143,3 +144,53 @@ def test_cooling_rate_skips_short_off_windows(db, pkg):
     _put(db, HEATER, [(t0, "off"), (t0 + 3600, "on")])  # 1 h < the 2 h minimum
     _put(db, WATER, [(t0 + 60, "105.0"), (t0 + 3500, "104.0")])
     assert _run(db, pkg, "Hot Tub Cooling Rate") is None
+
+
+def test_heating_rate_ignores_one_degree_raises(db, pkg):
+    # 102 -> 104 with water at 102: only 1 degree (102 -> 103) is measured, and
+    # with whole-degree readings that is mostly noise (real 102 may be 102.9).
+    # Live data had these at 0.31-0.66 F/min, 2-5x the real rate.
+    t0 = time.time() - 6 * 3600
+    _put(db, SETPOINT, [(t0 - 3600, "102.0"), (t0, "104.0")])
+    _put(db, WATER, [(t0 - 600, "102.0"), (t0 + 180, "103.0")])
+    assert _run(db, pkg, "Hot Tub Heating Rate") is None
+
+
+def test_heating_rate_ignores_implausible_start_readings(db, pkg):
+    # 2026-10-28 19:44 live: a boot-time glitch read the water as 24F, giving a
+    # "rate" of 23.9 F/min that dragged the weighted mean from ~0.1 to 0.52.
+    t0 = time.time() - 6 * 3600
+    _put(db, SETPOINT, [(t0 - 3600, "80.0"), (t0, "104.0")])
+    _put(db, WATER, [(t0 - 60, "24.0"), (t0 + 200, "104.0")])
+    assert _run(db, pkg, "Hot Tub Heating Rate") is None
+
+
+# --- 3. the real recorder history (2026-10-27 .. 2026-11-07) ------------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "thermal_history_2026-11-07.json"
+
+
+@pytest.fixture
+def real_db(db):
+    import json
+
+    data = json.loads(FIXTURE.read_text())
+    shift = time.time() - data["end_ts"]  # keep it inside the 30-day window
+    for entity_id, points in data["series"].items():
+        _put(db, entity_id, [(ts + shift, state) for ts, state in points])
+    return db
+
+
+def test_real_history_heating_rate_matches_measured_heat_ups(real_db, pkg):
+    # Measured heat-ups in this window take ~8-12 min per degree
+    # (e.g. 11-07 05:00: 97 -> 103 in 62 min; 11-05 04:30: 100 -> 103 in 33 min).
+    rate = _run(real_db, pkg, "Hot Tub Heating Rate")
+    assert rate is not None
+    assert 0.08 <= rate <= 0.12, f"{rate} F/min = {1 / rate:.1f} min/F"
+
+
+def test_real_history_cooling_rate_matches_measured_overnight_loss(real_db, pkg):
+    # Overnight coasts in this window lost 0.37-0.74 F/hr (2026-11-06 analysis).
+    rate = _run(real_db, pkg, "Hot Tub Cooling Rate")
+    assert rate is not None
+    assert 0.3 <= rate <= 0.8

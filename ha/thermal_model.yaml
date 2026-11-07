@@ -16,6 +16,13 @@ sql:
   # Heating rate: deg/min weighted toward recent events (last 30 days)
   # Logic: find setpoint-raise events, measure time for water to follow,
   #        compute deg/min per event, weight by recency (1/days_ago).
+  # The clock stops when the water reaches target - 1, so the degrees measured
+  # are (target - 1) - start, not target - start (that mismatch read 1-degree
+  # raises at 2-5x the real rate). Events need >= 2 measured degrees, since
+  # readings are whole degrees, and a plausible start (60-115F): a 24F boot
+  # glitch on 2026-10-28 alone dragged the live value to 0.52 F/min.
+  # Checked against the real 2026-10-27..11-07 history in
+  # tests/fixtures/thermal_history_2026-11-07.json.
   - name: "Hot Tub Heating Rate"
     unique_id: hot_tub_heating_rate
     query: >
@@ -63,11 +70,12 @@ sql:
       ),
       rated AS (
         SELECT
-          (target - start_temp) / ((reached_ts - raise_ts) / 60.0) AS deg_per_min,
+          ((target - 1.0) - start_temp) / ((reached_ts - raise_ts) / 60.0) AS deg_per_min,
           1.0 / (1.0 + (strftime('%s','now') - raise_ts) / 86400.0) AS weight
         FROM events
         WHERE reached_ts IS NOT NULL AND start_temp IS NOT NULL
-          AND target > start_temp + 0.5
+          AND start_temp BETWEEN 60 AND 115
+          AND (target - 1.0) - start_temp >= 2.0
           AND (reached_ts - raise_ts) > 120
           AND (reached_ts - raise_ts) < 14400
       )
