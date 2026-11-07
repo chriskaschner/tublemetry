@@ -43,6 +43,7 @@ AUTOMATION_FILES = [
     # restart an add-on that no longer exists.
     "zigbee_health.yaml",
     "basement_leak.yaml",
+    "hot_tub_heat_guard.yaml",
 ]
 
 # Files that are intentionally comment-only (deprecated / superseded).

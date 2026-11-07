@@ -1,0 +1,220 @@
+# Hot tub heat guard -- "the schedule said heat, did the tub actually heat?"
+#
+# WHY (2026-11-06): the panel went into Economy mode ("Ec") at 17:21 on 11-05.
+# Nobody noticed. The next morning the 04:30 raise to 104F was accepted and
+# verified by the panel, but in Economy the tub only heats during filter
+# cycles, so the heater waited until the 06:49 cycle and the water was ~98F at
+# use time. tou_watchdog.yaml could not see it: the setpoint WAS right.
+#
+# 1. Heat start guard: the confirmed setpoint rises above the water temperature
+#    and neither the pump nor the heater comes on within 10 min -> alert.
+#    On every normal day in the history the pump started within a minute of
+#    the raise. The pump counts as well as the heater because before firmware
+#    0.3.1 the heater bit froze whenever the heater ran with water <= 99F
+#    (frame_decode.h); the pump bit is decoded from the same frames but was the
+#    more reliable signal in the 11-06 data.
+#    A water reading older than 30 min counts as unknown, which ARMS the guard:
+#    on 11-06 the last reading was a stale 105 from 21:28 the night before
+#    (Economy hides the temperature), and trusting it would have suppressed
+#    exactly the alert that was needed. last_reported (not last_changed) is the
+#    freshness signal because the water sensor's 5-min heartbeat re-reports an
+#    unchanged value.
+#
+# 2. Panel mode alert: the panel sits in Economy or Sleep for 2 min -> alert,
+#    and a "back to Standard" push when it leaves.
+#    sensor.hot_tub_panel_mode latches the mode because in Economy the display
+#    ALTERNATES "Ec" with the temperature while the pump runs, so display_state
+#    never holds "economy" long enough for a `for:`. The latch is released by
+#    the "St" display (selecting Standard) or by 10 min without any Ec/SL frame
+#    (e.g. a power cycle that resets the mode without showing St). With the
+#    pump off, Economy shows a steady "Ec", which the 1-min re-render keeps
+#    refreshing.
+#    "standby" is the FIRMWARE's label for the "St"/"5t" display. On a Balboa
+#    panel St is STANDARD mode, so it means healthy here.
+#    The 2-min `for:` ignores the seconds-long pass through Ec and SL that
+#    happens every time someone cycles modes at the panel.
+#
+# How to leave Economy at the panel (VL-series topside), as every alert says it:
+#   "Fix: press Warm, then Light. Tap Light until St shows, then wait."
+
+template:
+  - trigger:
+      - platform: state
+        entity_id: sensor.tublemetry_hot_tub_display_state
+      - platform: time_pattern
+        minutes: "/1"
+      - platform: homeassistant
+        event: start
+    sensor:
+      - name: "Hot Tub Panel Mode"
+        unique_id: hot_tub_panel_mode
+        icon: mdi:leaf
+        state: >-
+          {% set ds = states('sensor.tublemetry_hot_tub_display_state') %}
+          {% set prev = this.state if this is defined else 'standard' %}
+          {% set seen = this.attributes.get('mode_seen') if this is defined else none %}
+          {% if ds in ['economy', 'sleep'] %}{{ ds }}
+          {% elif ds == 'standby' %}standard
+          {% elif prev in ['economy', 'sleep'] and seen
+                  and (now() - as_datetime(seen)).total_seconds() < 600 %}{{ prev }}
+          {% else %}standard
+          {% endif %}
+        attributes:
+          # When an Ec / SL frame was last seen; drives the 10-min release.
+          mode_seen: >-
+            {% set ds = states('sensor.tublemetry_hot_tub_display_state') %}
+            {% if ds in ['economy', 'sleep'] %}{{ now().isoformat() }}
+            {% elif this is defined %}{{ this.attributes.get('mode_seen', '') }}
+            {% endif %}
+
+automation:
+  - id: hot_tub_heat_start_guard
+    alias: Hot Tub Heat Start Guard
+    description: >
+      Alerts when the confirmed setpoint rises above the water temperature but
+      neither the pump nor the heater starts within 10 minutes (panel in
+      Economy/Sleep, heater fault, or a bad decode).
+    mode: restart
+
+    trigger:
+      - platform: state
+        entity_id: number.tublemetry_hot_tub_setpoint
+        not_from:
+          - unknown
+          - unavailable
+        not_to:
+          - unknown
+          - unavailable
+
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.state | float(0) > trigger.from_state.state | float(0) }}
+      # Heat is actually needed. A missing or stale reading counts as needed.
+      - condition: template
+        value_template: >-
+          {% set target = trigger.to_state.state | float(0) %}
+          {% set w = states.sensor.hot_tub_water_temperature %}
+          {% set water = w.state | float(-1) if w is defined and w is not none else -1 %}
+          {% set fresh = water >= 0 and (now() - w.last_reported).total_seconds() < 1800 %}
+          {{ (not fresh) or water < target }}
+      # Offline is stale_data.yaml's job; don't double-alert.
+      - condition: state
+        entity_id: binary_sensor.tublemetry_hot_tub_api_status
+        state: "on"
+
+    action:
+      - wait_template: >-
+          {{ is_state('binary_sensor.tublemetry_hot_tub_pump', 'on')
+             or is_state('binary_sensor.tublemetry_hot_tub_heater', 'on') }}
+        timeout: "00:10:00"
+        continue_on_timeout: true
+      - condition: template
+        value_template: "{{ not wait.completed }}"
+      - action: system_log.write
+        data:
+          message: >
+            HEAT GUARD: setpoint raised to
+            {{ states('number.tublemetry_hot_tub_setpoint') }}F but neither pump
+            nor heater started within 10 min (panel mode
+            {{ states('sensor.hot_tub_panel_mode') }}, display
+            {{ states('sensor.tublemetry_hot_tub_display') }}).
+          level: warning
+          logger: tubtron.heat_guard
+      - action: persistent_notification.create
+        data:
+          title: "Hot tub is NOT heating"
+          message: >
+            The setpoint went up to {{ states('number.tublemetry_hot_tub_setpoint') }}F
+            but neither the pump nor the heater has started in 10 minutes.
+
+            Panel mode: {{ states('sensor.hot_tub_panel_mode') }}
+            (display "{{ states('sensor.tublemetry_hot_tub_display') }}").
+            {% if states('sensor.hot_tub_panel_mode') in ['economy', 'sleep'] %}
+            It only heats during filter cycles in this mode.
+            Fix: press Warm, then Light. Tap Light until St shows, then wait.
+            {% endif %}
+          notification_id: hot_tub_not_heating
+      # The fix line is shown only for economy/sleep: in Standard the cause is
+      # something else, and a mode fix would send the user to the wrong buttons.
+      - action: notify.mobile_app_chris_iphone
+        data:
+          title: "Hot tub is not heating"
+          message: >
+            Setpoint is {{ states('number.tublemetry_hot_tub_setpoint') }}F but the
+            pump and heater haven't started in 10 min.
+            {% if states('sensor.hot_tub_panel_mode') in ['economy', 'sleep'] %}
+            Panel is in {{ states('sensor.hot_tub_panel_mode') }} mode.
+            Fix: press Warm, then Light. Tap Light until St shows, then wait.
+            {% else %}
+            Panel mode is standard; check the heater.
+            {% endif %}
+
+  - id: hot_tub_panel_mode_alert
+    alias: Hot Tub Panel Mode Alert
+    description: >
+      Alerts when the panel stays in Economy or Sleep mode (heats only during
+      filter cycles), and confirms when it is back in Standard.
+    mode: queued
+
+    trigger:
+      - platform: state
+        entity_id: sensor.hot_tub_panel_mode
+        to:
+          - economy
+          - sleep
+        for:
+          minutes: 2
+        id: entered
+      - platform: state
+        entity_id: sensor.hot_tub_panel_mode
+        from:
+          - economy
+          - sleep
+        to: standard
+        id: cleared
+
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: entered
+            sequence:
+              - action: system_log.write
+                data:
+                  message: >
+                    PANEL MODE: hot tub panel is in
+                    {{ states('sensor.hot_tub_panel_mode') }} mode; it will only
+                    heat during filter cycles.
+                  level: warning
+                  logger: tubtron.heat_guard
+              - action: persistent_notification.create
+                data:
+                  title: "Hot tub panel in {{ states('sensor.hot_tub_panel_mode') | title }} mode"
+                  message: >
+                    The panel is in {{ states('sensor.hot_tub_panel_mode') }} mode, so
+                    it only heats during filter cycles and scheduled preheats will
+                    not work.
+
+                    Fix: press Warm, then Light. Tap Light until St shows, then wait.
+
+                    (Press Light within about 3 seconds of Warm. Each Light tap steps
+                    Ec, SL, St. St is Standard.)
+                  notification_id: hot_tub_panel_mode
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Hot tub in {{ states('sensor.hot_tub_panel_mode') | title }} mode"
+                  message: >
+                    Only heats during filter cycles.
+                    Fix: press Warm, then Light. Tap Light until St shows, then wait.
+          - conditions:
+              - condition: trigger
+                id: cleared
+            sequence:
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: hot_tub_panel_mode
+              - action: notify.mobile_app_chris_iphone
+                data:
+                  title: "Hot tub back in Standard mode"
+                  message: "The panel left {{ trigger.from_state.state }} mode and will heat normally."
