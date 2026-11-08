@@ -1,0 +1,66 @@
+# MGE electricity price, for the Energy dashboard's cost tracking.
+#
+# Through 2026-12-31: Schedule Rg-2A, Residential Optional Time-of-Use
+# (sheet E-3.3.0, effective 2026-01-01). Every kWh pays distribution 0.06255 +
+# base energy 0.07731 = 0.13986. Mon-Fri, holidays excluded, an on-peak adder:
+#   10:00-13:00  summer 0.09670 / winter 0.09646
+#   13:00-18:00  summer 0.10653 / winter 0.09355
+#   18:00-21:00  summer 0.10106 / winter 0.09795
+# Summer is Jun 1 - Sep 30. Holidays: New Year's, Memorial Day, Independence Day,
+# Labor Day, Thanksgiving, Christmas.
+#
+# From 2027-01-01: the new TOU rate.
+#   on-peak   16:00-20:00 Mon-Fri  0.28305
+#   off-peak  22:00-04:00 daily    0.09435
+#   standard  all other hours      0.18870
+#
+# Net metering credits exports at the same $/kWh as imports, so the export
+# price mirrors the import price.
+#
+# Not included: the Fuel Cost Adjustment (varies; not in these sheets), the
+# daily grid connection charge (0.49315/day in 2026; the Energy dashboard has
+# no fixed-charge field), and holidays under the 2027 rate (not listed).
+#
+# Tested in tests/test_electricity_rate.py. now() re-renders every minute.
+
+template:
+  - sensor:
+      - name: "Electricity Import Price"
+        unique_id: electricity_import_price
+        unit_of_measurement: "USD/kWh"
+        icon: mdi:cash-clock
+        state: >-
+          {%- set n = now() -%}
+          {%- set hm = n.hour * 60 + n.minute -%}
+          {%- set wd = n.weekday() -%}
+          {%- if n.year >= 2027 -%}
+            {%- if hm >= 1320 or hm < 240 -%}{%- set p = 0.09435 -%}
+            {%- elif wd < 5 and 960 <= hm < 1200 -%}{%- set p = 0.28305 -%}
+            {%- else -%}{%- set p = 0.18870 -%}
+            {%- endif -%}
+          {%- else -%}
+            {%- set m = n.month -%}
+            {%- set d = n.day -%}
+            {%- set holiday = (m == 1 and d == 1)
+                 or (m == 5 and wd == 0 and d >= 25)
+                 or (m == 7 and d == 4)
+                 or (m == 9 and wd == 0 and d <= 7)
+                 or (m == 11 and wd == 3 and 22 <= d <= 28)
+                 or (m == 12 and d == 25) -%}
+            {%- set summer = 6 <= m <= 9 -%}
+            {%- if wd >= 5 or holiday -%}{%- set adder = 0 -%}
+            {%- elif 600 <= hm < 780 -%}{%- set adder = 0.09670 if summer else 0.09646 -%}
+            {%- elif 780 <= hm < 1080 -%}{%- set adder = 0.10653 if summer else 0.09355 -%}
+            {%- elif 1080 <= hm < 1260 -%}{%- set adder = 0.10106 if summer else 0.09795 -%}
+            {%- else -%}{%- set adder = 0 -%}
+            {%- endif -%}
+            {%- set p = 0.06255 + 0.07731 + adder -%}
+          {%- endif -%}
+          {{ p | round(5) }}
+
+      - name: "Electricity Export Price"
+        unique_id: electricity_export_price
+        unit_of_measurement: "USD/kWh"
+        icon: mdi:cash-plus
+        state: "{{ states('sensor.electricity_import_price') }}"
+        availability: "{{ states('sensor.electricity_import_price') | is_number }}"

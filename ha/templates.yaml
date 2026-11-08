@@ -12,9 +12,30 @@ template:
       # reports; tou_watchdog.yaml alerts if the commanded setpoint drifts from
       # it. now() re-renders every minute, so boundaries flip within ~60s.
       #
-      # Schedule (weekday):  04:30-10:00 max | 10:00-17:30 coast |
-      #   17:30-19:00 max-2 (evening preheat) | 19:00-22:00 max | 22:00-04:30 coast
-      # Schedule (weekend):  05:00-22:00 max | 22:00-05:00 coast
+      # Through 2026-12-31 (MGE Rg-2A: weekday on-peak 10:00-21:00):
+      #   weekday:  04:30-10:00 max | 10:00-17:30 coast |
+      #     17:30-19:00 max-2 (evening preheat) | 19:00-22:00 max | 22:00-04:30 coast
+      #   weekend:  05:00-22:00 max | 22:00-05:00 coast
+      # The morning max runs to 10:00 although the user is out by ~7:30: it banks
+      # heat at the base rate right up to the 10:00 on-peak start. Ending it at
+      # 08:00 was modelled (2026-11-07) at ~$0.10/winter weekday MORE, because the
+      # skipped heat is made up in the 17:30-19:00 preheat, partly on-peak.
+      #
+      # From 2027-01-01 (new TOU: on-peak 16-20 Mon-Fri, off-peak 22-04 daily),
+      # for a soak every morning (out by ~7:30) and every evening (~8:40):
+      #   weekday:  22:00-08:00 max  (off-peak hold heats the morning soak cheap)
+      #             08:00-preheat coast | preheat-16:00 max |
+      #             16:00-20:00 coast (ride the peak on stored heat) |
+      #             20:00-22:00 max (top up after the peak: 104 by ~8:40)
+      #   weekend:  max all day (no on-peak; the overnight hold is off-peak)
+      # Preheat starts when the minutes left before 16:00 fall to
+      # (max - water) / learned heating rate + 20 min (thermal_model.yaml), or a
+      # fixed 180 min if either input is unusable. Once on, this.state keeps it
+      # on while minutes-left <= lead + 60, so whole-degree water readings can't
+      # make it chatter (each flip is a button injection). Cost model behind the
+      # choice: ~$1/weekday cheaper than heating through the peak. 2027 holidays
+      # are not handled (the new rate sheet lists none).
+      # Tests: tests/test_expected_setpoint.py (2026), tests/test_schedule_2027.py.
       #
       # AWAY HOLD: while input_boolean.hot_tub_away_hold is on, the hold setpoint
       # replaces the schedule entirely (hot_tub_hold.yaml). Checked with states()
@@ -28,7 +49,22 @@ template:
           {% set coast = states('input_number.hot_tub_coast_setpoint') | int(96) %}
           {% set hm = now().hour * 60 + now().minute %}
           {% set wd = now().weekday() %}
-          {% if wd < 5 %}
+          {% if now().year >= 2027 %}
+          {%   if wd >= 5 or hm < 480 or hm >= 1200 %}{% set sp = maxsp %}
+          {%   elif hm >= 960 %}{% set sp = coast %}
+          {%   else %}
+          {%     set water = states('sensor.tublemetry_hot_tub_temperature') | float(0) %}
+          {%     set rate = states('sensor.hot_tub_heating_rate') | float(0) %}
+          {%     if 60 <= water <= 110 and 0.03 <= rate <= 0.3 %}
+          {%       set lead = ([maxsp - water, 0] | max) / rate + 20 %}
+          {%     else %}
+          {%       set lead = 180 %}
+          {%     endif %}
+          {%     set left = 960 - hm %}
+          {%     set heating = this is defined and (this.state | int(0)) == maxsp %}
+          {%     set sp = maxsp if (left <= lead or (heating and left <= lead + 60)) else coast %}
+          {%   endif %}
+          {% elif wd < 5 %}
           {%   if 270 <= hm < 600 %}{% set sp = maxsp %}
           {%   elif 600 <= hm < 1050 %}{% set sp = coast %}
           {%   elif 1050 <= hm < 1140 %}{% set sp = maxsp - 2 %}

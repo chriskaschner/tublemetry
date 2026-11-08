@@ -54,7 +54,7 @@ def at(base: datetime, hh: int, mm: int) -> datetime:
 @pytest.mark.parametrize("hh,mm,expected", [
     (3, 0, 96),     # before morning preheat -> coast
     (4, 30, 104),   # morning preheat boundary -> max
-    (9, 59, 104),   # still off-peak morning -> max
+    (9, 59, 104),   # bank heat at base rate until on-peak (out of tub by 7:30)
     (10, 0, 96),    # on-peak begins -> coast floor
     (12, 0, 96),    # mid on-peak -> coast
     (17, 29, 96),   # just before evening preheat -> coast

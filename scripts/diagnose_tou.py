@@ -79,6 +79,8 @@ CANONICAL_CORE = {
 NEW_AUTOMATIONS = {"Hot Tub TOU Watchdog", "Backup Dead-Man Alert", "AC Compressor Not Cooling"}
 
 # Schedule boundaries (local time) the setpoint should step at.
+# Through 2026. From 2027-01-01 the weekday steps are 08:00, 16:00, 20:00 plus a
+# preheat start that moves with the thermal model (see ha/templates.yaml).
 TOU_TRANSITIONS = ["04:30", "05:00", "10:00", "17:30", "19:00", "22:00"]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
